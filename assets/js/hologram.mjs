@@ -261,11 +261,6 @@ export default class Hologram {
         eventParam,
       );
 
-      console.log("event:", {
-        eventParam: eventParam,
-        operation: operation,
-      });
-
       if (Operation.isAction(operation)) {
         let delay;
 
