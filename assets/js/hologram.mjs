@@ -261,7 +261,7 @@ export default class Hologram {
         eventParam,
       );
 
-      console.log({
+      console.log("event:", {
         eventParam: eventParam,
         operation: operation,
       });
