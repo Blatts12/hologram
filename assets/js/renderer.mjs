@@ -810,12 +810,6 @@ export default class Renderer {
         attrsVdom,
       );
 
-      console.log({
-        originalEventName,
-        normalizedEventName,
-        effectiveDomEventName,
-      });
-
       acc[effectiveDomEventName] = (event) =>
         Hologram.handleUiEvent(
           event,
