@@ -797,13 +797,9 @@ export default class Renderer {
     return attrsDom.data.reduce((acc, attrDom) => {
       const attributeName = Bitstring.toText(attrDom.data[0]);
 
-      console.log("1:", attributeName);
-
       if (!attributeName.startsWith("$")) {
         return acc;
       }
-
-      console.log("2:", attributeName);
 
       const originalEventName = attributeName.substring(1);
       const normalizedEventName = $.#normalizeEventName(originalEventName);
@@ -813,6 +809,12 @@ export default class Renderer {
         tagName,
         attrsVdom,
       );
+
+      console.log({
+        originalEventName,
+        normalizedEventName,
+        effectiveDomEventName,
+      });
 
       acc[effectiveDomEventName] = (event) =>
         Hologram.handleUiEvent(
