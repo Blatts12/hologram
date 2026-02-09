@@ -25,6 +25,7 @@ import Vdom from "./vdom.mjs";
 // Events
 import ChangeEvent from "./events/change_event.mjs";
 import ClickEvent from "./events/click_event.mjs";
+import ClickAwayEvent from "./events/click_away_event.mjs";
 import FocusEvent from "./events/focus_event.mjs";
 import InputEvent from "./events/input_event.mjs";
 import KeyboardEvent from "./events/keyboard_event.mjs";
@@ -546,6 +547,9 @@ export default class Hologram {
 
       case "click":
         return ClickEvent;
+
+      case "clickaway":
+        return ClickAwayEvent;
 
       case "input":
         return InputEvent;

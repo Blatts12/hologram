@@ -699,12 +699,14 @@ export default class Renderer {
     const {attrs: attrsVdom, props: propsVdom} =
       Renderer.#renderAttributesAndProps(attrsDom, currentTagName);
 
-    const eventListenersVdom = Renderer.#renderEventListeners(
+    const allEventListeners = Renderer.#renderEventListeners(
       attrsDom,
       currentTagName,
       attrsVdom,
       defaultTarget,
     );
+
+    const {clickaway, ...eventListenersVdom} = allEventListeners;
 
     const childrenDom = dom.data[3];
 
@@ -785,6 +787,21 @@ export default class Renderer {
       // Make sure the script is executed if the code changes.
       data.key = `__hologramScript__:${childrenVdom[0]}`;
     }
+
+    data.hook.insert = (newVnode) => {
+      if (clickaway) {
+        document.addEventListener("click", (event) => {
+          if (newVnode.elm.contains(event.target)) return;
+          clickaway(event);
+        });
+      }
+    };
+
+    data.hook.destroy = (_oldVnode) => {
+      if (clickaway) {
+        document.removeEventListener("click", clickaway);
+      }
+    };
 
     return vnode(currentTagName, data, childrenVdom);
   }
