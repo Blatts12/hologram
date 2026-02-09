@@ -788,14 +788,14 @@ export default class Renderer {
       data.key = `__hologramScript__:${childrenVdom[0]}`;
     }
 
-    data.hook.create = (newVnode) => {
+    data.hook.create = (_emptyVnode, vnode) => {
       if (clickaway) {
         const clickawayHandler = (event) => {
-          if (newVnode.elm.contains(event.target)) return;
+          if (vnode.elm.contains(event.target)) return;
           clickaway(event);
         };
 
-        newVnode.elm.__hologramClickawayHandler = clickawayHandler;
+        vnode.elm.__hologramClickawayHandler = clickawayHandler;
         document.addEventListener("click", clickawayHandler);
       }
     };
