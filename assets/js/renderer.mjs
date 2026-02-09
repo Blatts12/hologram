@@ -718,7 +718,7 @@ export default class Renderer {
       currentTagName,
     );
 
-    const data = {attrs: attrsVdom, on: eventListenersVdom};
+    const data = {attrs: attrsVdom, on: eventListenersVdom, hook: {}};
 
     if (Object.keys(propsVdom).length > 0) {
       data.props = propsVdom;
