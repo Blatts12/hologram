@@ -788,7 +788,7 @@ export default class Renderer {
       data.key = `__hologramScript__:${childrenVdom[0]}`;
     }
 
-    data.hook.insert = (newVnode) => {
+    data.hook.create = (newVnode) => {
       if (clickaway) {
         const clickawayHandler = (event) => {
           if (newVnode.elm.contains(event.target)) return;
