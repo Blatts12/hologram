@@ -788,20 +788,25 @@ export default class Renderer {
       data.key = `__hologramScript__:${childrenVdom[0]}`;
     }
 
-    console.log(clickaway);
-
     data.hook.insert = (newVnode) => {
       if (clickaway) {
-        document.addEventListener("click", (event) => {
+        const clickawayHandler = (event) => {
           if (newVnode.elm.contains(event.target)) return;
           clickaway(event);
-        });
+        };
+
+        newVnode.elm.__hologramClickawayHandler = clickawayHandler;
+        document.addEventListener("click", clickawayHandler);
       }
     };
 
-    data.hook.destroy = (_oldVnode) => {
-      if (clickaway) {
-        document.removeEventListener("click", clickaway);
+    data.hook.destroy = (oldVnode) => {
+      if (oldVnode.elm.__hologramClickawayHandler) {
+        document.removeEventListener(
+          "click",
+          oldVnode.elm.__hologramClickawayHandler,
+        );
+        delete oldVnode.elm.__hologramClickawayHandler;
       }
     };
 
