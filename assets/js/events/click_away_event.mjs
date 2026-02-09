@@ -7,7 +7,7 @@ export default class ClickAwayEvent {
     return PointerEvent.buildOperationParam(event);
   }
 
-  static isEventIgnored(_event) {
+  static isEventIgnored(event) {
     return false;
   }
 }

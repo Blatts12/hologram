@@ -7,7 +7,13 @@ import {
   init,
 } from "snabbdom";
 
-const patch = init([attributesModule, eventListenersModule]);
+import {documentEventListenersModule} from "./document_event_listeners_module.mjs";
+
+const patch = init([
+  attributesModule,
+  eventListenersModule,
+  documentEventListenersModule,
+]);
 
 export default class Vdom {
   static addKeysToLinkAndScriptVnodes(node) {

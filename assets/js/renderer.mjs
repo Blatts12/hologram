@@ -718,7 +718,11 @@ export default class Renderer {
       currentTagName,
     );
 
-    const data = {attrs: attrsVdom, on: eventListenersVdom, hook: {}};
+    const data = {
+      attrs: attrsVdom,
+      on: eventListenersVdom,
+      ondocument: {clickaway},
+    };
 
     if (Object.keys(propsVdom).length > 0) {
       data.props = propsVdom;
@@ -787,28 +791,6 @@ export default class Renderer {
       // Make sure the script is executed if the code changes.
       data.key = `__hologramScript__:${childrenVdom[0]}`;
     }
-
-    data.hook.insert = (vnode) => {
-      if (clickaway) {
-        const clickawayHandler = (event) => {
-          if (vnode.elm.contains(event.target)) return;
-          clickaway(event);
-        };
-
-        vnode.elm.__hologramClickawayHandler = clickawayHandler;
-        document.addEventListener("click", clickawayHandler);
-      }
-    };
-
-    data.hook.destroy = (oldVnode) => {
-      if (oldVnode.elm.__hologramClickawayHandler) {
-        document.removeEventListener(
-          "click",
-          oldVnode.elm.__hologramClickawayHandler,
-        );
-        delete oldVnode.elm.__hologramClickawayHandler;
-      }
-    };
 
     return vnode(currentTagName, data, childrenVdom);
   }
