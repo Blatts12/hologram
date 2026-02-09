@@ -1,5 +1,6 @@
 "use strict";
 
+import Erlang from "./erlang.mjs";
 import Erlang_Lists from "./lists.mjs";
 import Erlang_Maps from "./maps.mjs";
 import HologramInterpreterError from "../errors/interpreter_error.mjs";
@@ -146,6 +147,48 @@ const Erlang_Sets = {
   // End from_list/2
   // Deps: [:maps.from_keys/2, :sets._validate_opts/1]
 
+  // Start intersection/2
+  "intersection/2": (set1, set2) => {
+    if (!Type.isMap(set1) || !Type.isMap(set2)) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":sets.size/1", [
+          !Type.isMap(set1) ? set1 : set2,
+        ]),
+      );
+    }
+
+    const encodedKeys1 = new Set(Object.keys(set1.data));
+    const encodedKeys2 = new Set(Object.keys(set2.data));
+    const intersectedKeys = encodedKeys1.intersection(encodedKeys2);
+
+    const data = {};
+    for (const encodedKey of intersectedKeys) {
+      data[encodedKey] = set1.data[encodedKey];
+    }
+
+    return {type: "map", data};
+  },
+  // End intersection/2
+  // Deps: []
+
+  // Start is_disjoint/2
+  "is_disjoint/2": (set1, set2) => {
+    if (!Type.isMap(set1) || !Type.isMap(set2)) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":sets.size/1", [
+          !Type.isMap(set1) ? set1 : set2,
+        ]),
+      );
+    }
+
+    const encodedKeys1 = new Set(Object.keys(set1.data));
+    const encodedKeys2 = new Set(Object.keys(set2.data));
+
+    return Type.boolean(encodedKeys1.isDisjointFrom(encodedKeys2));
+  },
+  // End is_disjoint/2
+  // Deps: []
+  //
   // Start is_element/2
   "is_element/2": (element, set) => {
     if (!Type.isMap(set)) {
@@ -202,6 +245,56 @@ const Erlang_Sets = {
   // End new/1
   // Deps: [:sets._validate_opts/1]
 
+  // Start size/1
+  "size/1": (set) => {
+    if (!Type.isMap(set)) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":sets.size/1", [set]),
+      );
+    }
+
+    return Erlang["map_size/1"](set);
+  },
+  // End size/1
+  // Deps: [:erlang.map_size/1]
+
+  // Start subtract/2
+  "subtract/2": (set1, set2) => {
+    if (!Type.isMap(set1)) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":sets.filter/2"),
+      );
+    }
+
+    if (Object.keys(set1.data).length === 0) {
+      return Type.map();
+    }
+
+    if (!Type.isMap(set2)) {
+      const firstElement = Object.values(set1.data)[0][0];
+
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":sets.is_element/2", [
+          firstElement,
+          set2,
+        ]),
+      );
+    }
+
+    const encodedKeys1 = new Set(Object.keys(set1.data));
+    const encodedKeys2 = new Set(Object.keys(set2.data));
+    const subtractedKeys = encodedKeys1.difference(encodedKeys2);
+
+    const data = {};
+    for (const encodedKey of subtractedKeys) {
+      data[encodedKey] = set1.data[encodedKey];
+    }
+
+    return {type: "map", data};
+  },
+  // End subtract/2
+  // Deps: []
+
   // Start to_list/1
   "to_list/1": (set) => {
     if (!Type.isMap(set)) {
@@ -214,6 +307,31 @@ const Erlang_Sets = {
   },
   // End to_list/1
   // Deps: [:maps.keys/1]
+
+  // Start union/2
+  "union/2": (set1, set2) => {
+    if (!Type.isMap(set1) || !Type.isMap(set2)) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":sets.size/1", [
+          !Type.isMap(set1) ? set1 : set2,
+        ]),
+      );
+    }
+
+    const encodedKeys1 = new Set(Object.keys(set1.data));
+    const encodedKeys2 = new Set(Object.keys(set2.data));
+    const unionedKeys = encodedKeys1.union(encodedKeys2);
+
+    const data = {};
+    for (const encodedKey of unionedKeys) {
+      data[encodedKey] =
+        encodedKey in set1.data ? set1.data[encodedKey] : set2.data[encodedKey];
+    }
+
+    return {type: "map", data};
+  },
+  // End union/2
+  // Deps: []
 };
 
 export default Erlang_Sets;

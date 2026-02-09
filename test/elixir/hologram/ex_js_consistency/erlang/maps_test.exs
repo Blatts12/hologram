@@ -148,6 +148,116 @@ defmodule Hologram.ExJsConsistency.Erlang.MapsTest do
     end
   end
 
+  describe "intersect/2" do
+    test "takes value from the second map" do
+      map1 = %{a: 1, b: 3}
+      map2 = %{a: 2, c: 4}
+
+      assert :maps.intersect(map1, map2) == %{a: 2}
+    end
+
+    test "handles multiple common keys" do
+      map1 = %{:a => 1, "a" => 2, 1 => 3}
+      map2 = %{:a => 10, "a" => 20, 1 => 30}
+
+      assert :maps.intersect(map1, map2) == %{:a => 10, "a" => 20, 1 => 30}
+    end
+
+    test "returns an empty map when no keys are common" do
+      map1 = %{a: 1, b: 3}
+      map2 = %{c: 2, d: 4}
+
+      assert :maps.intersect(map1, map2) == %{}
+    end
+
+    test "returns an empty map when the first map is empty" do
+      assert :maps.intersect(%{}, %{a: 2}) == %{}
+    end
+
+    test "returns an empty map when the second map is empty" do
+      assert :maps.intersect(%{a: 1}, %{}) == %{}
+    end
+
+    test "returns an empty map when both maps are empty" do
+      assert :maps.intersect(%{}, %{}) == %{}
+    end
+
+    test "raises BadMapError if the first argument is not a map" do
+      assert_error BadMapError, "expected a map, got: :abc", fn ->
+        :maps.intersect(:abc, %{})
+      end
+    end
+
+    test "raises BadMapError if the second argument is not a map" do
+      assert_error BadMapError, "expected a map, got: :abc", fn ->
+        :maps.intersect(%{}, :abc)
+      end
+    end
+  end
+
+  describe "intersect_with/3" do
+    setup do
+      [combiner: fn _k, v1, v2 -> v1 + v2 end]
+    end
+
+    test "combines values with function", %{combiner: combiner} do
+      map1 = %{a: 1, b: 3}
+      map2 = %{a: 2, c: 4}
+
+      assert :maps.intersect_with(combiner, map1, map2) == %{a: 3}
+    end
+
+    test "handles multiple common keys", %{combiner: combiner} do
+      map1 = %{:a => 1, "a" => 2, 1 => 3}
+      map2 = %{:a => 10, "a" => 20, 1 => 30}
+
+      assert :maps.intersect_with(combiner, map1, map2) == %{:a => 11, "a" => 22, 1 => 33}
+    end
+
+    test "returns an empty map when no keys are common", %{combiner: combiner} do
+      map1 = %{a: 1, b: 3}
+      map2 = %{c: 2, d: 4}
+
+      assert :maps.intersect_with(combiner, map1, map2) == %{}
+    end
+
+    test "returns an empty map when map1 is empty", %{combiner: combiner} do
+      assert :maps.intersect_with(combiner, %{}, %{a: 2}) == %{}
+    end
+
+    test "returns an empty map when map2 is empty", %{combiner: combiner} do
+      assert :maps.intersect_with(combiner, %{a: 1}, %{}) == %{}
+    end
+
+    test "returns an empty map when both maps are empty", %{combiner: combiner} do
+      assert :maps.intersect_with(combiner, %{}, %{}) == %{}
+    end
+
+    test "raises ArgumentError if the first argument is not an anonymous function" do
+      assert_error ArgumentError,
+                   "errors were found at the given arguments:\n\n  * 1st argument: not a fun that takes three arguments\n",
+                   fn -> :maps.intersect_with(:abc, %{}, %{}) end
+    end
+
+    test "raises ArgumentError if the first argument is an anonymous function with arity different than 3" do
+      assert_error ArgumentError,
+                   "errors were found at the given arguments:\n\n  * 1st argument: not a fun that takes three arguments\n",
+                   fn -> :maps.intersect_with(fn v1, v2 -> v1 + v2 end, %{}, %{}) end
+    end
+
+    test "raises BadMapError if the second argument is not a map", %{combiner: combiner} do
+      assert_error BadMapError, "expected a map, got: :abc", fn ->
+        :maps.intersect_with(combiner, :abc, %{})
+      end
+    end
+
+    test "raises BadMapError if the third argument is not a map", %{combiner: combiner} do
+      assert_error BadMapError, "expected a map, got: :abc", fn ->
+        :maps.intersect_with(combiner, %{}, :abc)
+      end
+    end
+  end
+
   describe "is_key/2" do
     test "returns true if the given map has the given key" do
       assert :maps.is_key(:b, %{a: 1, b: 2}) == true

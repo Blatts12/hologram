@@ -1,6 +1,8 @@
 "use strict";
 
 import Bitstring from "../bitstring.mjs";
+import Erlang_Maps from "../erlang/maps.mjs";
+import Erlang_Os from "../erlang/os.mjs";
 import ERTS from "../erts.mjs";
 import HologramBoxedError from "../errors/boxed_error.mjs";
 import HologramInterpreterError from "../errors/interpreter_error.mjs";
@@ -36,6 +38,33 @@ MFAs for sorting:
 */
 
 const Erlang = {
+  // Start _validate_time_unit/2
+  "_validate_time_unit/2": (unit, argumentIndex) => {
+    const validAtomUnits = [
+      "nanosecond",
+      "nano_seconds",
+      "microsecond",
+      "micro_seconds",
+      "millisecond",
+      "milli_seconds",
+      "second",
+      "seconds",
+      "native",
+      "perf_counter",
+    ];
+
+    if (
+      !(Type.isAtom(unit) && validAtomUnits.includes(unit.value)) &&
+      !(Type.isInteger(unit) && unit.value > 0n)
+    ) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(argumentIndex, "invalid time unit"),
+      );
+    }
+  },
+  // End _validate_time_unit/2
+  // Deps: []
+
   // Start */2
   "*/2": (left, right) => {
     if (!Type.isNumber(left) || !Type.isNumber(right)) {
@@ -266,6 +295,19 @@ const Erlang = {
     return Type.isTrue(left) ? rightFun(context) : left;
   },
   // End andalso/2
+  // Deps: []
+
+  // Start append_element/2
+  "append_element/2": (tuple, term) => {
+    if (!Type.isTuple(tuple)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not a tuple"),
+      );
+    }
+
+    return Type.tuple([...tuple.data, term]);
+  },
+  // End append_element/2
   // Deps: []
 
   // Start apply/2
@@ -585,6 +627,18 @@ const Erlang = {
   // End bit_size/1
   // Deps: []
 
+  // Start bnot/1
+  "bnot/1": (integer) => {
+    if (!Type.isInteger(integer)) {
+      const arg = Interpreter.inspect(integer);
+      Interpreter.raiseArithmeticError(`Bitwise.bnot(${arg})`);
+    }
+
+    return Type.integer(~integer.value);
+  },
+  // End bnot/1
+  // Deps: []
+
   // Start bor/2
   "bor/2": (integer1, integer2) => {
     if (!Type.isInteger(integer1) || !Type.isInteger(integer2)) {
@@ -597,6 +651,28 @@ const Erlang = {
     return Type.integer(integer1.value | integer2.value);
   },
   // End bor/2
+  // Deps: []
+
+  // Start bsl/2
+  "bsl/2": (integer, shift) => {
+    if (!Type.isInteger(integer) || !Type.isInteger(shift)) {
+      const arg1 = Interpreter.inspect(integer);
+      const arg2 = Interpreter.inspect(shift);
+
+      Interpreter.raiseArithmeticError(`Bitwise.bsl(${arg1}, ${arg2})`);
+    }
+
+    const integerValue = integer.value;
+    const shiftValue = shift.value;
+
+    if (shiftValue < 0n) {
+      // Erlang's bsl with negative shift is equivalent to bsr with positive shift
+      return Type.integer(integerValue >> -shiftValue);
+    } else {
+      return Type.integer(integerValue << shiftValue);
+    }
+  },
+  // End bsl/2
   // Deps: []
 
   // Start bsr/2
@@ -665,6 +741,96 @@ const Erlang = {
     return Type.integer(Math.ceil(number.value));
   },
   // End ceil/1
+  // Deps: []
+
+  // Start convert_time_unit/3
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "convert_time_unit/3": (time, fromUnit, toUnit) => {
+    // :native and :perf_counter are technically platform-dependent in Erlang/OTP,
+    // but in practice they're nanoseconds on all major platforms (Linux, macOS, Windows).
+    // We standardize on nanoseconds to match typical Erlang behavior while keeping
+    // JS behavior predictable.
+    const NATIVE_TIME_UNIT = 1_000_000_000n;
+    const PERF_COUNTER_TIME_UNIT = 1_000_000_000n;
+
+    const resolveTimeUnit = (unit) => {
+      switch (unit.value) {
+        case "nanosecond":
+        case "nano_seconds":
+          return 1_000_000_000n;
+
+        case "microsecond":
+        case "micro_seconds":
+          return 1_000_000n;
+
+        case "millisecond":
+        case "milli_seconds":
+          return 1_000n;
+
+        case "second":
+        case "seconds":
+          return 1n;
+
+        case "native":
+          return NATIVE_TIME_UNIT;
+
+        case "perf_counter":
+          return PERF_COUNTER_TIME_UNIT;
+
+        // integer
+        default:
+          return unit.value;
+      }
+    };
+
+    if (!Type.isInteger(time)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not an integer"),
+      );
+    }
+
+    Erlang["_validate_time_unit/2"](fromUnit, 2);
+    Erlang["_validate_time_unit/2"](toUnit, 3);
+
+    const fromUnitValue = resolveTimeUnit(fromUnit);
+    const toUnitValue = resolveTimeUnit(toUnit);
+    const numerator = toUnitValue * time.value;
+
+    const adjustedNumerator =
+      time.value < 0n ? numerator - (fromUnitValue - 1n) : numerator;
+
+    const result = adjustedNumerator / fromUnitValue;
+
+    return Type.integer(result);
+  },
+  // End convert_time_unit/3
+  // Deps: [:erlang._validate_time_unit/2]
+
+  // Start delete_element/2
+  "delete_element/2": (index, tuple) => {
+    if (!Type.isInteger(index)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not an integer"),
+      );
+    }
+
+    if (!Type.isTuple(tuple)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(2, "not a tuple"),
+      );
+    }
+
+    if (index.value > tuple.data.length || index.value < 1) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "out of range"),
+      );
+    }
+
+    const data = tuple.data.toSpliced(Number(index.value) - 1, 1);
+
+    return Type.tuple(data);
+  },
+  // End delete_element/2
   // Deps: []
 
   // Start div/2
@@ -960,6 +1126,151 @@ const Erlang = {
   // End floor/1
   // Deps: []
 
+  // Start fun_info/1
+  "fun_info/1": (fun) => {
+    if (!Type.isAnonymousFunction(fun)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not a fun"),
+      );
+    }
+
+    const arity = Type.integer(fun.arity);
+
+    const isExternal = fun.capturedModule !== null;
+
+    if (isExternal) {
+      // Erlang modules are prefixed with ":" (e.g. ":erlang"), Elixir modules are not
+      const isErlangModule = fun.capturedModule.startsWith(":");
+
+      const module = isErlangModule
+        ? Type.atom(fun.capturedModule.slice(1))
+        : Type.alias(fun.capturedModule);
+
+      const env = Type.list();
+      const name = Type.atom(fun.capturedFunction);
+      const type = Type.atom("external");
+
+      return Type.list([
+        Type.tuple([Type.atom("module"), module]),
+        Type.tuple([Type.atom("name"), name]),
+        Type.tuple([Type.atom("arity"), arity]),
+        Type.tuple([Type.atom("env"), env]),
+        Type.tuple([Type.atom("type"), type]),
+      ]);
+    }
+
+    // Local fun
+
+    const env = Type.list(Object.values(fun.context.vars));
+    const module = fun.context.module;
+    const type = Type.atom("local");
+
+    // fun.uniq is a unique integer for this fun (from ERTS.funSequence).
+    // We derive index, new_index, uniq, and new_uniq from it.
+    // In Erlang, index/new_index are per-module indices into the fun table,
+    // and uniq/new_uniq are calculated from compiled code.
+    // TODO: When hot code reloading is implemented, index/new_index should be
+    // per-module indices, and uniq/new_uniq should be based on compiled code hash.
+    const index = Type.integer(fun.uniq);
+    const newIndex = Type.integer(fun.uniq);
+    const uniq = Type.integer(fun.uniq);
+
+    // Generate new_uniq as a 16-byte (128-bit) binary derived from fun.uniq
+    const newUniq = Type.bitstring([
+      Type.bitstringSegment(Type.integer(fun.uniq), {
+        type: "integer",
+        size: Type.integer(128),
+      }),
+    ]);
+
+    const name = Type.atom(Interpreter.inspect(fun));
+    const pid = ERTS.INIT_PID;
+
+    return Type.list([
+      Type.tuple([Type.atom("pid"), pid]),
+      Type.tuple([Type.atom("module"), module]),
+      Type.tuple([Type.atom("new_index"), newIndex]),
+      Type.tuple([Type.atom("new_uniq"), newUniq]),
+      Type.tuple([Type.atom("index"), index]),
+      Type.tuple([Type.atom("uniq"), uniq]),
+      Type.tuple([Type.atom("name"), name]),
+      Type.tuple([Type.atom("arity"), arity]),
+      Type.tuple([Type.atom("env"), env]),
+      Type.tuple([Type.atom("type"), type]),
+    ]);
+  },
+  // End fun_info/1
+  // Deps: []
+
+  // Start fun_info/2
+  "fun_info/2": (fun, item) => {
+    const validItems = new Set([
+      "arity",
+      "env",
+      "index",
+      "module",
+      "name",
+      "new_index",
+      "new_uniq",
+      "pid",
+      "type",
+      "uniq",
+    ]);
+
+    const info = Erlang["fun_info/1"](fun);
+
+    if (!Type.isAtom(item) || !validItems.has(item.value)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(2, "invalid item"),
+      );
+    }
+
+    const result = info.data.find(
+      (tuple) => tuple.data[0].value === item.value,
+    );
+
+    if (result === undefined) {
+      return Type.tuple([item, Type.atom("undefined")]);
+    }
+
+    return result;
+  },
+  // End fun_info/2
+  // Deps: [:erlang.fun_info/1]
+
+  // Start function_exported/3
+  "function_exported/3": (module, functionName, arity) => {
+    if (!Type.isAtom(module)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not an atom"),
+      );
+    }
+
+    if (!Type.isAtom(functionName)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(2, "not an atom"),
+      );
+    }
+
+    if (!Type.isInteger(arity)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(3, "not an integer"),
+      );
+    }
+
+    const moduleProxy = Interpreter.moduleProxy(module);
+
+    if (typeof moduleProxy === "undefined") {
+      return Type.boolean(false);
+    }
+
+    const functionArityStr = `${functionName.value}/${arity.value}`;
+
+    return Type.boolean(moduleProxy.__exports__.has(functionArityStr));
+  },
+  // End function_exported/3
+  // Deps: []
+
   // Start hd/1
   "hd/1": (list) => {
     if (!Type.isList(list) || list.data.length === 0) {
@@ -1222,6 +1533,152 @@ const Erlang = {
   // End length/1
   // Deps: []
 
+  // Start list_to_atom/1
+  "list_to_atom/1": (codePoints) => {
+    if (!Type.isList(codePoints)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not a list"),
+      );
+    }
+
+    if (!Type.isProperList(codePoints)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not a proper list"),
+      );
+    }
+
+    const areCodePointsValid = codePoints.data.every(
+      (item) => Type.isInteger(item) && Bitstring.validateCodePoint(item.value),
+    );
+
+    if (!areCodePointsValid) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not a list of characters"),
+      );
+    }
+
+    const text = String.fromCodePoint(
+      ...codePoints.data.map((codePoint) => Number(codePoint.value)),
+    );
+
+    return Type.atom(text);
+  },
+  // End list_to_atom/1
+  // Deps: []
+
+  // Start list_to_binary/1
+  "list_to_binary/1": (ioList) => {
+    if (!Type.isList(ioList)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not an iolist term"),
+      );
+    }
+
+    const chunks = [];
+
+    const collect = (list) => {
+      const data = list.data;
+      const len = data.length;
+      const elemCount = list.isProper ? len : len - 1;
+
+      for (let i = 0; i < elemCount; i++) {
+        const item = data[i];
+
+        if (Type.isInteger(item)) {
+          if (item.value < 0n || item.value > 255n) {
+            Interpreter.raiseArgumentError(
+              Interpreter.buildArgumentErrorMsg(1, "not an iolist term"),
+            );
+          }
+
+          const segment = Type.bitstringSegment(item, {
+            type: "integer",
+            size: Type.integer(8),
+            unit: 1n,
+            endianness: "big",
+          });
+
+          chunks.push(Bitstring.fromSegmentWithIntegerValue(segment));
+        } else if (Type.isBinary(item)) {
+          chunks.push(item);
+        } else if (Type.isList(item)) {
+          collect(item);
+        } else {
+          Interpreter.raiseArgumentError(
+            Interpreter.buildArgumentErrorMsg(1, "not an iolist term"),
+          );
+        }
+      }
+
+      if (!list.isProper) {
+        const tail = data[len - 1];
+
+        if (Type.isBinary(tail)) {
+          chunks.push(tail);
+        } else {
+          Interpreter.raiseArgumentError(
+            Interpreter.buildArgumentErrorMsg(1, "not an iolist term"),
+          );
+        }
+      }
+    };
+
+    collect(ioList);
+
+    return Bitstring.concat(chunks);
+  },
+  // End list_to_binary/1
+  // Deps: []
+
+  // Note: due to practical reasons the behaviour of the client version is inconsistent with the server version.
+  // The client version works exactly the same as list_to_atom/1.
+  // Start list_to_existing_atom/1
+  "list_to_existing_atom/1": (codePoints) => {
+    return Erlang["list_to_atom/1"](codePoints);
+  },
+  // End list_to_existing_atom/1
+  // Deps: [:erlang.list_to_atom/1]
+
+  // Start list_to_float/1
+  "list_to_float/1": (list) => {
+    if (!Type.isProperList(list)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not a list"),
+      );
+    }
+
+    const codes = [];
+
+    for (const code of list.data) {
+      if (!Type.isInteger(code)) {
+        Interpreter.raiseArgumentError(
+          Interpreter.buildArgumentErrorMsg(
+            1,
+            "not a textual representation of a float",
+          ),
+        );
+      }
+
+      codes.push(Number(code.value));
+    }
+
+    const text = String.fromCharCode(...codes);
+    const floatRegex = /^[+-]?\d+\.\d+([eE][+-]?\d+)?$/;
+
+    if (!floatRegex.test(text)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    }
+
+    return Type.float(Number(text));
+  },
+  // End list_to_float/1
+  // Deps: []
+
   // Start list_to_integer/1
   "list_to_integer/1": (list) => {
     return Erlang["list_to_integer/2"](list, Type.integer(10n));
@@ -1436,6 +1893,121 @@ const Erlang = {
   // End list_to_ref/1
   // Deps: []
 
+  // Start list_to_tuple/1
+  "list_to_tuple/1": (list) => {
+    if (!Type.isProperList(list)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not a list"),
+      );
+    }
+    return Type.tuple(list.data);
+  },
+  // End list_to_tuple/1
+  // Deps: []
+
+  // Start localtime/0
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "localtime/0": () => {
+    const now = new Date();
+
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1; // JavaScript months are 0-indexed
+    const day = now.getDate();
+
+    const hour = now.getHours();
+    const minute = now.getMinutes();
+    const second = now.getSeconds();
+
+    const date = Type.tuple([
+      Type.integer(year),
+      Type.integer(month),
+      Type.integer(day),
+    ]);
+
+    const time = Type.tuple([
+      Type.integer(hour),
+      Type.integer(minute),
+      Type.integer(second),
+    ]);
+
+    return Type.tuple([date, time]);
+  },
+  // End localtime/0
+  // Deps: []
+
+  // Start make_fun/3
+  "make_fun/3": (module, functionName, arity) => {
+    if (!Type.isAtom(module)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not an atom"),
+      );
+    }
+
+    if (!Type.isAtom(functionName)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(2, "not an atom"),
+      );
+    }
+
+    if (!Type.isInteger(arity)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(3, "not an integer"),
+      );
+    }
+
+    if (arity.value < 0n) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(3, "out of range"),
+      );
+    }
+
+    if (arity.value > 255n) {
+      Interpreter.raiseArgumentError("argument error");
+    }
+
+    const arityValue = Number(arity.value);
+    const functionNameText = functionName.value;
+
+    const paramNames = Array.from(
+      {length: arityValue},
+      (_elem, index) => `$${index + 1}`,
+    );
+
+    const clauses = [
+      {
+        params: (_context) =>
+          paramNames.map((name) => Type.variablePattern(name)),
+        guards: [],
+        body: (context) => {
+          const args = Type.list(paramNames.map((name) => context.vars[name]));
+
+          return Interpreter.callNamedFunction(
+            module,
+            functionName,
+            args,
+            context,
+          );
+        },
+      },
+    ];
+
+    const capturedModule = module.value.startsWith("Elixir.")
+      ? Interpreter.moduleExName(module)
+      : `:${module.value}`;
+
+    const context = Interpreter.buildContext({module: Type.nil()});
+
+    return Type.functionCapture(
+      capturedModule,
+      functionNameText,
+      arityValue,
+      clauses,
+      context,
+    );
+  },
+  // End make_fun/3
+  // Deps: []
+
   // Start make_ref/0
   "make_ref/0": () => {
     const node = ERTS.nodeTable.CLIENT_NODE;
@@ -1468,6 +2040,13 @@ const Erlang = {
   },
   // End make_tuple/2
   // Deps: []
+
+  // Start map_get/2
+  "map_get/2": (key, map) => {
+    return Erlang_Maps["get/2"](key, map);
+  },
+  // End map_get/2
+  // Deps: [:maps.get/2]
 
   // Start map_size/1
   "map_size/1": (map) => {
@@ -1514,6 +2093,54 @@ const Erlang = {
   // End min/2
   // Deps: []
 
+  // Start monotonic_time/0
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "monotonic_time/0": () => {
+    // performance.now() returns milliseconds with sub-ms precision.
+    // We convert to nanoseconds (multiply by 1_000_000).
+    //
+    // MAX_SAFE_INTEGER == 9_007_199_254_740_991
+    // MAX_SAFE_INTEGER / 1_000_000 ≈ 9_007_199_254 ms ≈ 104 days.
+    // Beyond that, ms * 1_000_000 exceeds MAX_SAFE_INTEGER and loses precision.
+    //
+    // Fast path: direct multiplication when safely within bounds.
+    // Safe path: split whole/fractional parts to avoid large float multiplication.
+    const ms = performance.now();
+
+    if (ms < 9_007_199_254) {
+      return Type.integer(BigInt(Math.round(ms * 1_000_000)));
+    }
+
+    const msWhole = Math.trunc(ms);
+
+    return Type.integer(
+      BigInt(msWhole) * 1_000_000n +
+        BigInt(Math.round((ms - msWhole) * 1_000_000)),
+    );
+  },
+  // End monotonic_time/0
+  // Deps: []
+
+  // Start monotonic_time/1
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "monotonic_time/1": (unit) => {
+    // TODO: unit is validated twice - here (for correct arg index in error message)
+    // and in convert_time_unit/3. This could be optimized in the future.
+    Erlang["_validate_time_unit/2"](unit, 1);
+    const nativeTime = Erlang["monotonic_time/0"]();
+
+    return Erlang["convert_time_unit/3"](nativeTime, Type.atom("native"), unit);
+  },
+  // End monotonic_time/1
+  // Deps: [:erlang._validate_time_unit/2, :erlang.convert_time_unit/3, :erlang.monotonic_time/0]
+
+  // Start node/0
+  "node/0": () => {
+    return Type.atom(ERTS.nodeTable.CLIENT_NODE);
+  },
+  // End node/0
+  // Deps: []
+
   // Start not/1
   "not/1": (term) => {
     if (!Type.isBoolean(term)) {
@@ -1540,6 +2167,41 @@ const Erlang = {
   // End orelse/2
   // Deps: []
 
+  // Start pid_to_list/1
+  "pid_to_list/1": (pid) => {
+    if (!Type.isPid(pid)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not a pid"),
+      );
+    }
+
+    const pidText = `<${pid.segments.join(".")}>`;
+
+    return Bitstring.toCodepoints(Type.bitstring(pidText));
+  },
+  // End pid_to_list/1
+  // Deps: []
+
+  // Start ref_to_list/1
+  "ref_to_list/1": (reference) => {
+    if (!Type.isReference(reference)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not a reference"),
+      );
+    }
+
+    const localIncarnationId = ERTS.nodeTable.getLocalIncarnationId(
+      reference.node,
+      reference.creation,
+    );
+
+    return Type.charlist(
+      `#Ref<${localIncarnationId}.${reference.idWords.toReversed().join(".")}>`,
+    );
+  },
+  // End ref_to_list/1
+  // Deps: []
+
   // Start rem/2
   "rem/2": (integer1, integer2) => {
     if (
@@ -1558,6 +2220,28 @@ const Erlang = {
     return Type.integer(integer1.value % integer2.value);
   },
   // End rem/2
+  // Deps: []
+
+  // Start round/1
+  "round/1": (number) => {
+    if (!Type.isNumber(number)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not a number"),
+      );
+    }
+
+    if (Type.isInteger(number)) {
+      return number;
+    }
+
+    // Erlang rounds half away from zero (5.5 -> 6, -5.5 -> -6)
+    // JavaScript Math.round rounds half toward positive infinity (5.5 -> 6, -5.5 -> -5)
+    // Use sign * round(abs) to get correct behavior
+    // Adding 0 converts -0 to 0
+    const value = number.value;
+    return Type.integer(Math.sign(value) * Math.round(Math.abs(value)) + 0);
+  },
+  // End round/1
   // Deps: []
 
   // Start setelement/3
@@ -1644,6 +2328,22 @@ const Erlang = {
   // End split_binary/2
   // Deps: [:erlang.byte_size/1]
 
+  // Start system_time/0
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "system_time/0": () => {
+    return Erlang_Os["system_time/0"]();
+  },
+  // End system_time/0
+  // Deps: [:os.system_time/0]
+
+  // Start system_time/1
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "system_time/1": (unit) => {
+    return Erlang_Os["system_time/1"](unit);
+  },
+  // End system_time/1
+  // Deps: [:os.system_time/1]
+
   // Start tl/1
   "tl/1": (list) => {
     if (!Type.isList(list) || list.data.length === 0) {
@@ -1671,6 +2371,30 @@ const Erlang = {
   // End tl/1
   // Deps: []
 
+  // Start time_offset/0
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "time_offset/0": () => {
+    return Erlang["time_offset/1"](Type.atom("native"));
+  },
+  // End time_offset/0
+  // Deps: [:erlang.time_offset/1]
+
+  // Start time_offset/1
+  // See: docs/erlang_time_functions_porting_strategy.md
+  "time_offset/1": (unit) => {
+    const systemTimeNs = BigInt(Date.now()) * 1_000_000n;
+    const monoTimeNs = BigInt(Math.round(performance.now() * 1_000_000));
+    const offsetNs = systemTimeNs - monoTimeNs;
+
+    return Erlang["convert_time_unit/3"](
+      Type.integer(offsetNs),
+      Type.atom("native"),
+      unit,
+    );
+  },
+  // End time_offset/1
+  // Deps: [:erlang.convert_time_unit/3]
+
   // Start trunc/1
   "trunc/1": (number) => {
     if (!Type.isNumber(number)) {
@@ -1687,6 +2411,19 @@ const Erlang = {
     return number;
   },
   // End trunc/1
+  // Deps: []
+
+  // Start tuple_size/1
+  "tuple_size/1": (tuple) => {
+    if (!Type.isTuple(tuple)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not a tuple"),
+      );
+    }
+
+    return Type.integer(tuple.data.length);
+  },
+  // End tuple_size/1
   // Deps: []
 
   // Start tuple_to_list/1

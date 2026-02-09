@@ -9,6 +9,7 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
 
   alias Hologram.Commons.SystemUtils
   alias Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1
+  alias Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2
 
   @moduletag :consistency
 
@@ -1279,6 +1280,26 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
     end
   end
 
+  describe "append_element/2" do
+    test "appends an element to an empty tuple" do
+      assert :erlang.append_element({}, 1) == {1}
+    end
+
+    test "appends an element to a single-element tuple" do
+      assert :erlang.append_element({1}, 2) == {1, 2}
+    end
+
+    test "appends an element to a tuple with multiple elements" do
+      assert :erlang.append_element({:one, :two}, :three) == {:one, :two, :three}
+    end
+
+    test "raises ArgumentError if the first argument is not a tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a tuple"),
+                   {:erlang, :append_element, [:abc, 1]}
+    end
+  end
+
   describe "apply/2" do
     setup do
       [
@@ -1958,6 +1979,39 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
     end
   end
 
+  describe "bnot/1" do
+    test "positive integer" do
+      # 2 = 0b00000010, -3 = 0b11111101
+      assert :erlang.bnot(2) == -3
+    end
+
+    test "zero" do
+      # 0 = 0b00000000, -1 = 0b11111111
+      assert :erlang.bnot(0) == -1
+    end
+
+    test "negative integer" do
+      # -3 = 0b11111101, 2 = 0b00000010
+      assert :erlang.bnot(-3) == 2
+    end
+
+    test "argument above JS Number.MAX_SAFE_INTEGER" do
+      # Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      assert :erlang.bnot(9_007_199_254_740_992) == -9_007_199_254_740_993
+    end
+
+    test "argument below JS Number.MIN_SAFE_INTEGER" do
+      # Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      assert :erlang.bnot(-9_007_199_254_740_992) == 9_007_199_254_740_991
+    end
+
+    test "raises ArithmeticError if the argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.bnot(2.0)",
+                   {:erlang, :bnot, [2.0]}
+    end
+  end
+
   describe "bor/2" do
     test "both arguments are positive" do
       # 4 = 0b00000100, 3 = 0b00000011, 7 = 0b00000111
@@ -2022,6 +2076,64 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
       assert_error ArithmeticError,
                    "bad argument in arithmetic expression: Bitwise.bor(1, 2.0)",
                    {:erlang, :bor, [1, 2.0]}
+    end
+  end
+
+  describe "bsl/2" do
+    test "common usage" do
+      # 1 = 0b00000001, 16 = 0b00010000
+      assert :erlang.bsl(1, 4) == 16
+    end
+
+    test "zero shift" do
+      # 247 = 0b11110111
+      assert :erlang.bsl(247, 0) == 247
+    end
+
+    test "shift right via negative shift" do
+      # 16 = 0b00010000, 8 = 0b00001000
+      assert :erlang.bsl(16, -1) == 8
+    end
+
+    test "negative integer left shift" do
+      # -2 = 0b11111110, -4 = 0b11111100
+      assert :erlang.bsl(-2, 1) == -4
+    end
+
+    test "large shift for positive integer" do
+      # 1 << 64 = 18_446_744_073_709_551_616
+      assert :erlang.bsl(1, 64) == 18_446_744_073_709_551_616
+    end
+
+    test "large shift for negative integer" do
+      # -1 << 64 = -18_446_744_073_709_551_616
+      assert :erlang.bsl(-1, 64) == -18_446_744_073_709_551_616
+    end
+
+    test "above JS Number.MAX_SAFE_INTEGER" do
+      # Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      #  9_007_199_254_740_992 = 0b100000000000000000000000000000000000000000000000000000
+      # 18_014_398_509_481_984 = 0b1000000000000000000000000000000000000000000000000000000
+      assert :erlang.bsl(9_007_199_254_740_992, 1) == 18_014_398_509_481_984
+    end
+
+    test "below JS Number.MIN_SAFE_INTEGER" do
+      # Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      #  -9_007_199_254_740_992 = 0b1111111111100000000000000000000000000000000000000000000000000000
+      # -18_014_398_509_481_984 = 0b1111111111000000000000000000000000000000000000000000000000000000
+      assert :erlang.bsl(-9_007_199_254_740_992, 1) == -18_014_398_509_481_984
+    end
+
+    test "raises ArithmeticError if the first argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.bsl(1.0, 2)",
+                   {:erlang, :bsl, [1.0, 2]}
+    end
+
+    test "raises ArithmeticError if the second argument is not an integer" do
+      assert_error ArithmeticError,
+                   "bad argument in arithmetic expression: Bitwise.bsl(1, 2.0)",
+                   {:erlang, :bsl, [1, 2.0]}
     end
   end
 
@@ -2221,6 +2333,165 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
       assert_error ArgumentError,
                    build_argument_error_msg(1, "not a number"),
                    {:erlang, :ceil, [:abc]}
+    end
+  end
+
+  describe "convert_time_unit/3" do
+    test "converts seconds to milliseconds" do
+      assert :erlang.convert_time_unit(2, :second, :millisecond) == 2000
+    end
+
+    test "converts milliseconds to seconds using floor rounding" do
+      assert :erlang.convert_time_unit(1500, :millisecond, :second) == 1
+    end
+
+    test "converts negative values using floor rounding" do
+      assert :erlang.convert_time_unit(-1500, :millisecond, :second) == -2
+    end
+
+    test "supports deprecated symbolic time units" do
+      assert :erlang.convert_time_unit(1, :seconds, :milli_seconds) == 1000
+    end
+
+    test "supports integer time units" do
+      assert :erlang.convert_time_unit(3, 1, 1000) == 3000
+    end
+
+    test "converts zero time" do
+      assert :erlang.convert_time_unit(0, :second, :millisecond) == 0
+    end
+
+    test "handles same unit conversion (identity)" do
+      assert :erlang.convert_time_unit(42, :millisecond, :millisecond) == 42
+    end
+
+    test "handles same unit conversion with negative value (identity)" do
+      assert :erlang.convert_time_unit(-42, :millisecond, :millisecond) == -42
+    end
+
+    test "supports native time unit" do
+      # :native is the time unit of :erlang.monotonic_time/0. It's technically
+      # platform-dependent, but is nanoseconds on all major platforms (Linux,
+      # macOS, Windows). The JS port standardizes on nanoseconds.
+      assert :erlang.convert_time_unit(1, :second, :native) == 1_000_000_000
+    end
+
+    test "supports perf_counter time unit" do
+      # :perf_counter is the time unit of :os.perf_counter/0 (high-resolution OS timer
+      # used for micro-benchmarking). Like :native, it's technically platform-dependent
+      # but is nanoseconds on all major platforms. 2_000_000 nanoseconds = 2 milliseconds.
+      assert :erlang.convert_time_unit(2_000_000, :perf_counter, :millisecond) == 2
+    end
+
+    test "supports nanosecond time unit" do
+      assert :erlang.convert_time_unit(1, :second, :nanosecond) == 1_000_000_000
+    end
+
+    test "supports microsecond time unit" do
+      # 1 microsecond < 1 millisecond, floor(1/1000) = 0
+      assert :erlang.convert_time_unit(1, :microsecond, :millisecond) == 0
+    end
+
+    test "supports all deprecated time unit forms" do
+      # 1 nanosecond < 1 microsecond, floor(1/1000) = 0
+      assert :erlang.convert_time_unit(1, :nano_seconds, :micro_seconds) == 0
+    end
+
+    test "handles large integer values" do
+      # Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      large_value = 9_007_199_254_740_992
+
+      assert :erlang.convert_time_unit(large_value, :second, :second) == large_value
+    end
+
+    test "raises ArgumentError if time is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an integer"),
+                   {:erlang, :convert_time_unit, [1.0, :second, :second]}
+    end
+
+    test "raises ArgumentError if fromUnit is invalid" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid time unit"),
+                   {:erlang, :convert_time_unit, [1, :banana, :second]}
+    end
+
+    test "raises ArgumentError if toUnit is invalid" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "invalid time unit"),
+                   {:erlang, :convert_time_unit, [1, :second, 0]}
+    end
+
+    test "raises ArgumentError if fromUnit is a negative integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid time unit"),
+                   {:erlang, :convert_time_unit, [1, -1, :second]}
+    end
+
+    test "raises ArgumentError if fromUnit is zero" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid time unit"),
+                   {:erlang, :convert_time_unit, [1, 0, :second]}
+    end
+
+    test "raises ArgumentError if toUnit is a float" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "invalid time unit"),
+                   {:erlang, :convert_time_unit, [1, :second, 1.5]}
+    end
+
+    test "raises ArgumentError if fromUnit is not an atom or positive integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid time unit"),
+                   {:erlang, :convert_time_unit, [1, "second", :second]}
+    end
+  end
+
+  describe "delete_element/2" do
+    test "deletes the only item from a single-item tuple" do
+      assert :erlang.delete_element(1, {5}) == {}
+    end
+
+    test "deletes the first item from a tuple with multiple items" do
+      assert :erlang.delete_element(1, {5, 6, 7}) == {6, 7}
+    end
+
+    test "deletes a middle item from a tuple with multiple items" do
+      assert :erlang.delete_element(2, {5, 6, 7}) == {5, 7}
+    end
+
+    test "deletes the last item from a tuple with multiple items" do
+      assert :erlang.delete_element(3, {5, 6, 7}) == {5, 6}
+    end
+
+    test "raises ArgumentError if the first argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an integer"),
+                   {:erlang, :delete_element, [:abc, {5, 6, 7}]}
+    end
+
+    test "raises ArgumentError if the second argument is not a tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not a tuple"),
+                   {:erlang, :delete_element, [1, :abc]}
+    end
+
+    test "raises ArgumentError if the given index is greater than the number of elements in the tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :delete_element, [10, {5, 6, 7}]}
+    end
+
+    test "raises ArgumentError if the given index is 0" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :delete_element, [0, {5, 6, 7}]}
+    end
+
+    test "raises ArgumentError if the given index is negative" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "out of range"),
+                   {:erlang, :delete_element, [-1, {5, 6, 7}]}
     end
   end
 
@@ -2862,6 +3133,238 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
     end
   end
 
+  describe "fun_info/1" do
+    test "external function, arity 0" do
+      assert :erlang.fun_info(&Module1.fun_0/0) == [
+               module: Module1,
+               name: :fun_0,
+               arity: 0,
+               env: [],
+               type: :external
+             ]
+    end
+
+    test "external function, arity 1" do
+      assert :erlang.fun_info(&Module1.fun_1/1) == [
+               module: Module1,
+               name: :fun_1,
+               arity: 1,
+               env: [],
+               type: :external
+             ]
+    end
+
+    test "external function, arity 2" do
+      assert :erlang.fun_info(&Module1.fun_2/2) == [
+               module: Module1,
+               name: :fun_2,
+               arity: 2,
+               env: [],
+               type: :external
+             ]
+    end
+
+    test "external function, Erlang module" do
+      assert :erlang.fun_info(&:erlang.abs/1) == [
+               module: :erlang,
+               name: :abs,
+               arity: 1,
+               env: [],
+               type: :external
+             ]
+    end
+
+    test "local function, arity 0, empty env" do
+      fun = fn -> 123 end
+      result = :erlang.fun_info(fun)
+
+      assert Keyword.keys(result) == [
+               :pid,
+               :module,
+               :new_index,
+               :new_uniq,
+               :index,
+               :uniq,
+               :name,
+               :arity,
+               :env,
+               :type
+             ]
+
+      assert {:pid, pid("0.0.0")} in result
+      assert {:module, __MODULE__} in result
+      assert {:name, :"-test fun_info/1 local function, arity 0, empty env/1-fun-0-"} in result
+      assert {:arity, 0} in result
+      assert {:env, []} in result
+      assert {:type, :local} in result
+
+      # Verify types of dynamic fields
+      assert is_integer(Keyword.get(result, :index))
+      assert is_integer(Keyword.get(result, :new_index))
+      assert is_binary(Keyword.get(result, :new_uniq))
+      assert is_integer(Keyword.get(result, :uniq))
+    end
+
+    test "local function, arity 1, closure reference" do
+      my_var = wrap_term(123)
+      fun = fn x -> x + my_var end
+      result = :erlang.fun_info(fun)
+
+      assert {:arity, 1} in result
+      assert {:env, [123]} in result
+      assert {:type, :local} in result
+    end
+
+    test "local function, arity 2, multiple closure references" do
+      var_a = wrap_term(10)
+      var_b = wrap_term(20)
+      fun = fn x, y -> x + y + var_a + var_b end
+      result = :erlang.fun_info(fun)
+
+      assert {:arity, 2} in result
+      assert {:env, [10, 20]} in result
+      assert {:type, :local} in result
+    end
+
+    test "raises ArgumentError if the argument is not a fun" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a fun"),
+                   {:erlang, :fun_info, [:abc]}
+    end
+  end
+
+  describe "fun_info/2" do
+    test "external function, item present" do
+      assert :erlang.fun_info(&Module1.fun_1/1, :arity) == {:arity, 1}
+    end
+
+    test "external function, item available only for local functions returns undefined" do
+      assert :erlang.fun_info(&Module1.fun_1/1, :pid) == {:pid, :undefined}
+    end
+
+    test "local function, item present" do
+      fun = fn x -> x + 1 end
+
+      assert :erlang.fun_info(fun, :arity) == {:arity, 1}
+    end
+
+    test "raises ArgumentError if the first arg is not a fun" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a fun"),
+                   {:erlang, :fun_info, [:abc, :arity]}
+    end
+
+    test "raises ArgumentError if the second arg is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid item"),
+                   {:erlang, :fun_info, [&Module1.fun_1/1, 123]}
+    end
+
+    test "external function, invalid item raises ArgumentError" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid item"),
+                   {:erlang, :fun_info, [&Module1.fun_1/1, :invalid_item]}
+    end
+
+    test "local function, invalid item raises ArgumentError" do
+      fun = fn x -> x + 1 end
+
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "invalid item"),
+                   {:erlang, :fun_info, [fun, :invalid_item]}
+    end
+  end
+
+  describe "function_exported/3" do
+    # Erlang module
+
+    test "returns true for existing function in Erlang module" do
+      assert :erlang.function_exported(:erlang, :abs, 1) == true
+    end
+
+    test "returns false for non-existing function in Erlang module" do
+      assert :erlang.function_exported(:erlang, :nonexistent_function, 1) == false
+    end
+
+    test "returns false for wrong arity in Erlang module" do
+      assert :erlang.function_exported(:erlang, :abs, 2) == false
+    end
+
+    test "returns false for non-existing Erlang module" do
+      assert :erlang.function_exported(:nonexistent_module, :foo, 1) == false
+    end
+
+    # Elixir module
+
+    test "returns true for public function in Elixir module" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :public_fun, 1) == true
+    end
+
+    test "returns false for private function in Elixir module" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :private_fun, 1) == false
+    end
+
+    test "returns false for non-existing function in Elixir module" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :nonexistent_function, 1) == false
+    end
+
+    test "returns false for wrong arity in Elixir module" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :public_fun, 2) == false
+    end
+
+    test "returns false for non-existing Elixir module" do
+      assert :erlang.function_exported(NonExistentModule, :foo, 1) == false
+    end
+
+    # Arity edge cases
+
+    test "returns true for arity 0" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :public_fun_0, 0) == true
+    end
+
+    test "returns false for negative arity" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :public_fun, -1) == false
+    end
+
+    test "returns false for arity greater than 255" do
+      Code.ensure_loaded!(Module2)
+
+      assert :erlang.function_exported(Module2, :public_fun, 256) == false
+    end
+
+    # Errors
+
+    test "raises ArgumentError if module is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an atom"),
+                   {:erlang, :function_exported, ["not_atom", :foo, 1]}
+    end
+
+    test "raises ArgumentError if function is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an atom"),
+                   {:erlang, :function_exported, [:erlang, "not_atom", 1]}
+    end
+
+    test "raises ArgumentError if arity is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "not an integer"),
+                   {:erlang, :function_exported, [:erlang, :abs, 2.0]}
+    end
+  end
+
   describe "hd/1" do
     test "returns the first item in the list" do
       assert :erlang.hd([1, 2, 3]) === 1
@@ -3227,6 +3730,366 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
     end
   end
 
+  describe "list_to_atom/1" do
+    test "empty list" do
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.list_to_atom([]) == :""
+    end
+
+    test "ASCII characters" do
+      # ~c"abc" = [97, 98, 99]
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.list_to_atom([97, 98, 99]) == :abc
+    end
+
+    test "Unicode characters" do
+      # ~c"全息图" = [20840, 24687, 22270]
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.list_to_atom([20_840, 24_687, 22_270]) == :全息图
+    end
+
+    test "mixed ASCII and Unicode characters" do
+      # ~c"aπb" = [97, 960, 98]
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.list_to_atom([97, 960, 98]) == String.to_atom("aπb")
+    end
+
+    test "single character" do
+      # ~c"a" = [97]
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      assert :erlang.list_to_atom([97]) == :a
+    end
+
+    test "raises ArgumentError if the argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_atom, [:abc]}
+    end
+
+    test "raises ArgumentError if the argument is an improper list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a proper list"),
+                   {:erlang, :list_to_atom, [[97 | 98]]}
+    end
+
+    test "raises ArgumentError if list contains non-integer element" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list of characters"),
+                   {:erlang, :list_to_atom, [[97, :x, 99]]}
+    end
+
+    test "raises ArgumentError if list contains invalid codepoint" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list of characters"),
+                   {:erlang, :list_to_atom, [[-1]]}
+    end
+
+    test "raises ArgumentError if given a binary instead of a charlist" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_atom, ["abc"]}
+    end
+
+    test "raises ArgumentError if given chardata with nested list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list of characters"),
+                   {:erlang, :list_to_atom, [[[97, 98], 99]]}
+    end
+
+    test "raises ArgumentError if given iolist containing binary" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list of characters"),
+                   {:erlang, :list_to_atom, [[97, "bc"]]}
+    end
+  end
+
+  describe "list_to_binary/1" do
+    test "empty list" do
+      assert :erlang.list_to_binary([]) == <<>>
+    end
+
+    test "list of integers" do
+      assert :erlang.list_to_binary([1, 2, 3]) == <<1, 2, 3>>
+    end
+
+    test "list of binaries" do
+      assert :erlang.list_to_binary([<<1, 2>>, <<3, 4>>]) == <<1, 2, 3, 4>>
+    end
+
+    test "nested list" do
+      assert :erlang.list_to_binary([[1, 2], [3, 4]]) == <<1, 2, 3, 4>>
+    end
+
+    test "deeply nested list" do
+      assert :erlang.list_to_binary([[1, [2, [3, [4]]]]]) == <<1, 2, 3, 4>>
+    end
+
+    test "improper list with binary tail" do
+      assert :erlang.list_to_binary([1 | <<2, 3>>]) == <<1, 2, 3>>
+    end
+
+    test "mixed integers and binaries (iolist from doc example)" do
+      bin1 = <<1, 2, 3>>
+      bin2 = <<4, 5>>
+      bin3 = <<6>>
+
+      assert :erlang.list_to_binary([bin1, 1, [2, 3, bin2], 4 | bin3]) ==
+               <<1, 2, 3, 1, 2, 3, 4, 5, 4, 6>>
+    end
+
+    test "list with empty sublists" do
+      assert :erlang.list_to_binary([[], [], []]) == <<>>
+    end
+
+    test "boundary values 0 and 255" do
+      assert :erlang.list_to_binary([0, 255]) == <<0, 255>>
+    end
+
+    test "raises ArgumentError if the argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [:abc]}
+    end
+
+    test "raises ArgumentError if the argument is a binary" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, ["abc"]}
+    end
+
+    test "raises ArgumentError if list contains an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [[:abc]]}
+    end
+
+    test "raises ArgumentError if list contains a float" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [[1.0]]}
+    end
+
+    test "raises ArgumentError if list contains an integer greater than 255" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [[256]]}
+    end
+
+    test "raises ArgumentError if list contains a negative integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [[-1]]}
+    end
+
+    test "raises ArgumentError if improper list has a non-binary tail" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [[1, 2 | :abc]]}
+    end
+
+    test "raises ArgumentError if list contains a non-byte-aligned bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an iolist term"),
+                   {:erlang, :list_to_binary, [[<<1::3>>]]}
+    end
+  end
+
+  # Note: due to practical reasons the behaviour of the client version is inconsistent with the server version.
+  # The client version works exactly the same as list_to_atom/1.
+  # test "list_to_existing_atom/1"
+
+  describe "list_to_float/1" do
+    test "positive float without sign in decimal notation" do
+      # ~c"1.23" = [49, 46, 50, 51]
+      assert :erlang.list_to_float([49, 46, 50, 51]) == 1.23
+    end
+
+    test "positive float with sign in decimal notation" do
+      # ~c"+1.23" = [43, 49, 46, 50, 51]
+      assert :erlang.list_to_float([43, 49, 46, 50, 51]) == 1.23
+    end
+
+    test "negative float in decimal notation" do
+      # ~c"-1.23" = [45, 49, 46, 50, 51]
+      assert :erlang.list_to_float([45, 49, 46, 50, 51]) == -1.23
+    end
+
+    test "unsigned zero float in decimal notation" do
+      # ~c"0.0" = [48, 46, 48]
+      assert :erlang.list_to_float([48, 46, 48]) === 0.0
+    end
+
+    test "signed positive zero float in decimal notation" do
+      # ~c"+0.0" = [43, 48, 46, 48]
+      assert :erlang.list_to_float([43, 48, 46, 48]) === +0.0
+    end
+
+    test "signed negative zero float in decimal notation" do
+      # ~c"-0.0" = [45, 48, 46, 48]
+      assert :erlang.list_to_float([45, 48, 46, 48]) === -0.0
+    end
+
+    test "positive float in scientific notation" do
+      # ~c"1.23456e+3" = [49, 46, 50, 51, 52, 53, 54, 101, 43, 51]
+      assert :erlang.list_to_float([49, 46, 50, 51, 52, 53, 54, 101, 43, 51]) == 1234.56
+    end
+
+    test "negative float in scientific notation" do
+      # ~c"-1.23456e+3" = [45, 49, 46, 50, 51, 52, 53, 54, 101, 43, 51]
+      assert :erlang.list_to_float([45, 49, 46, 50, 51, 52, 53, 54, 101, 43, 51]) == -1234.56
+    end
+
+    test "unsigned zero float in scientific notation" do
+      # ~c"0.0e+1" = [48, 46, 48, 101, 43, 49]
+      assert :erlang.list_to_float([48, 46, 48, 101, 43, 49]) === 0.0
+    end
+
+    test "signed positive zero float in scientific notation" do
+      # ~c"+0.0e+1" = [43, 48, 46, 48, 101, 43, 49]
+      assert :erlang.list_to_float([43, 48, 46, 48, 101, 43, 49]) === +0.0
+    end
+
+    test "signed negative zero float in scientific notation" do
+      # ~c"-0.0e+1" = [45, 48, 46, 48, 101, 43, 49]
+      assert :erlang.list_to_float([45, 48, 46, 48, 101, 43, 49]) === -0.0
+    end
+
+    test "with leading zeros" do
+      # ~c"00012.34" = [48, 48, 48, 49, 50, 46, 51, 52]
+      assert :erlang.list_to_float([48, 48, 48, 49, 50, 46, 51, 52]) == 12.34
+    end
+
+    test "uppercase scientific notation" do
+      # ~c"1.23456E3" = [49, 46, 50, 51, 52, 53, 54, 69, 51]
+      assert :erlang.list_to_float([49, 46, 50, 51, 52, 53, 54, 69, 51]) == 1234.56
+    end
+
+    test "negative exponent" do
+      # ~c"1.23e-3" = [49, 46, 50, 51, 101, 45, 51]
+      assert :erlang.list_to_float([49, 46, 50, 51, 101, 45, 51]) == 0.00123
+    end
+
+    test "raises ArgumentError if the argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_float, [:abc]}
+    end
+
+    test "raises ArgumentError if the argument is an improper list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_float, [[49, 46 | 50]]}
+    end
+
+    test "raises ArgumentError if list contains non-integer element" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[49, :abc, 51]]}
+    end
+
+    test "positive integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[49, 50, 51]]}
+    end
+
+    test "negative integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[45, 49, 50, 51]]}
+    end
+
+    test "zero integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[48]]}
+    end
+
+    test "with underscore" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[49, 95, 48, 48, 48, 46, 53]]}
+    end
+
+    test "invalid float format" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[49, 50, 46, 51, 46, 52]]}
+    end
+
+    test "non-numeric text" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[97, 98, 99]]}
+    end
+
+    test "empty input" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[]]}
+    end
+
+    test "decimal point only" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[46]]}
+    end
+
+    test "with leading dot" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[46, 53]]}
+    end
+
+    test "with trailing dot" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[53, 46]]}
+    end
+
+    test "scientific notation without the fractional part" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[51, 101, 49, 48]]}
+    end
+
+    test "with trailing exponent marker" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[50, 101]]}
+    end
+
+    test "with leading whitespace" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[32, 49, 50, 46, 51]]}
+    end
+
+    test "with trailing whitespace" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[49, 50, 46, 51, 32]]}
+    end
+
+    test "with multiple exponent markers" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[49, 101, 50, 101, 51]]}
+    end
+
+    test "Infinity text" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[73, 110, 102, 105, 110, 105, 116, 121]]}
+    end
+
+    test "hex-style JS float" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a textual representation of a float"),
+                   {:erlang, :list_to_float, [[48, 120, 49, 46, 102, 112, 50]]}
+    end
+  end
+
   describe "list_to_integer/1" do
     test "delegates to list_to_integer/2 with base 10" do
       assert :erlang.list_to_integer([49, 50, 51]) ==
@@ -3464,6 +4327,113 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
     end
   end
 
+  describe "list_to_tuple/1" do
+    test "non-empty list" do
+      assert :erlang.list_to_tuple([1, 2, 3]) == {1, 2, 3}
+    end
+
+    test "empty list" do
+      assert :erlang.list_to_tuple([]) == {}
+    end
+
+    test "raises ArgumentError if the argument is not a list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_tuple, [:abc]}
+    end
+
+    test "raises ArgumentError if the argument is an improper list" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a list"),
+                   {:erlang, :list_to_tuple, [[1, 2 | 3]]}
+    end
+  end
+
+  describe "localtime/0" do
+    test "returns a tuple with date and time" do
+      assert {{year, month, day}, {hour, minute, second}} = :erlang.localtime()
+
+      assert year in 1970..2100
+      assert month in 1..12
+      assert day in 1..31
+      assert hour in 0..23
+      assert minute in 0..59
+      assert second in 0..59
+    end
+  end
+
+  describe "make_fun/3" do
+    test "creates a function capture from an Elixir module function with no args" do
+      assert :erlang.make_fun(Module1, :fun_0, 0) == (&Module1.fun_0/0)
+    end
+
+    test "creates a function capture from an Elixir module function with a single arg" do
+      assert :erlang.make_fun(Module1, :fun_1, 1) == (&Module1.fun_1/1)
+    end
+
+    test "creates a function capture from an Elixir module function with multiple args" do
+      assert :erlang.make_fun(Module1, :fun_2, 2) == (&Module1.fun_2/2)
+    end
+
+    test "creates a function capture from an Erlang module function" do
+      assert :erlang.make_fun(:erlang, :+, 2) == (&:erlang.+/2)
+    end
+
+    test "creates a function capture with maximum arity 255" do
+      result = :erlang.make_fun(Module1, :fun_0, 255)
+
+      assert is_function(result, 255)
+    end
+
+    test "creates a function capture for a non-existent module" do
+      result = :erlang.make_fun(NonExistentModule, :some_fun, 1)
+
+      assert is_function(result, 1)
+    end
+
+    test "creates a function capture for a non-existent function" do
+      result = :erlang.make_fun(Module1, :nonexistent_fun, 1)
+
+      assert is_function(result, 1)
+    end
+
+    test "creates a function capture for a non-matching arity" do
+      result = :erlang.make_fun(Module1, :fun_1, 2)
+
+      assert is_function(result, 2)
+    end
+
+    test "raises ArgumentError if the first argument is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an atom"),
+                   {:erlang, :make_fun, [123, :fun_0, 0]}
+    end
+
+    test "raises ArgumentError if the second argument is not an atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an atom"),
+                   {:erlang, :make_fun, [Module1, 123, 0]}
+    end
+
+    test "raises ArgumentError if the third argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "not an integer"),
+                   {:erlang, :make_fun, [Module1, :fun_0, 2.0]}
+    end
+
+    test "raises ArgumentError if the third argument is a negative integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "out of range"),
+                   {:erlang, :make_fun, [Module1, :fun_0, -1]}
+    end
+
+    test "raises ArgumentError if the third argument exceeds maximum arity" do
+      assert_error ArgumentError,
+                   "argument error",
+                   {:erlang, :make_fun, [Module1, :fun_0, 256]}
+    end
+  end
+
   describe "make_ref/0" do
     test "returns a reference" do
       result = :erlang.make_ref()
@@ -3501,6 +4471,20 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
     end
   end
 
+  describe "map_get/2" do
+    test "returns the value associated with the given key if map contains the key" do
+      assert :erlang.map_get(:b, %{a: 1, b: 2}) == 2
+    end
+
+    test "raises BadMapError if the second argument is not a map" do
+      assert_error BadMapError, "expected a map, got: 1", {:erlang, :map_get, [:a, 1]}
+    end
+
+    test "raises KeyError if the map doesn't contain the given key" do
+      assert_error KeyError, build_key_error_msg(:a, %{}), {:erlang, :map_get, [:a, %{}]}
+    end
+  end
+
   describe "map_size/1" do
     test "returns the number of items in the map" do
       assert :erlang.map_size(%{a: 1, b: 2}) == 2
@@ -3510,6 +4494,74 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
       assert_error BadMapError,
                    "expected a map, got: :abc",
                    {:erlang, :map_size, [:abc]}
+    end
+  end
+
+  describe "monotonic_time/0" do
+    test "returns an integer" do
+      assert is_integer(:erlang.monotonic_time())
+    end
+
+    test "is monotonic non-decreasing" do
+      t1 = :erlang.monotonic_time()
+      t2 = :erlang.monotonic_time()
+
+      assert t2 >= t1
+    end
+  end
+
+  describe "monotonic_time/1" do
+    test "with valid atom unit" do
+      assert is_integer(:erlang.monotonic_time(:second))
+    end
+
+    test "with valid integer unit" do
+      assert is_integer(:erlang.monotonic_time(1000))
+    end
+
+    test "applies time unit conversion" do
+      micro = :erlang.monotonic_time(:microsecond)
+      nano = :erlang.monotonic_time(:nanosecond)
+
+      # Use absolute values since monotonic_time can be negative
+      abs_micro = abs(micro)
+      abs_nano = abs(nano)
+
+      # Allow small timing drift between calls
+      assert abs_nano >= abs_micro * 999
+      assert abs_nano <= abs_micro * 1001 + 1000
+    end
+
+    test "raises ArgumentError when argument is not atom or integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :monotonic_time, [1.0]}
+    end
+
+    test "raises ArgumentError when atom argument is not a valid time unit" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :monotonic_time, [:invalid]}
+    end
+
+    test "raises ArgumentError when integer argument is 0" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :monotonic_time, [0]}
+    end
+
+    test "raises ArgumentError when integer argument is negative" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :monotonic_time, [-1]}
+    end
+  end
+
+  # On the server, node/0 returns `nonode@nohost` if the node is not alive,
+  # or the actual node name if it is. On the client it always returns `hologram_client`.
+  describe "node/0" do
+    test "returns local node" do
+      assert :erlang.node() == :nonode@nohost
     end
   end
 
@@ -3548,6 +4600,43 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
       assert_error ArgumentError,
                    "argument error: nil",
                    fn -> :erlang.orelse(arg, true) end
+    end
+  end
+
+  describe "pid_to_list/1" do
+    test "single digit segments" do
+      pid = pid("0.1.2")
+
+      assert :erlang.pid_to_list(pid) == ~c"<0.1.2>"
+    end
+
+    test "multi-digit segments" do
+      pid = pid("0.11.222")
+
+      assert :erlang.pid_to_list(pid) == ~c"<0.11.222>"
+    end
+
+    test "not a pid" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a pid"),
+                   {:erlang, :pid_to_list, [123]}
+    end
+  end
+
+  describe "ref_to_list/1" do
+    test "reference for local node" do
+      result =
+        "0.1.2.3"
+        |> ref()
+        |> :erlang.ref_to_list()
+
+      assert result == ~c"#Ref<0.1.2.3>"
+    end
+
+    test "not a reference" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a reference"),
+                   {:erlang, :ref_to_list, [:abc]}
     end
   end
 
@@ -3612,6 +4701,95 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
       assert_error ArithmeticError, "bad argument in arithmetic expression: rem(5, :abc)", fn ->
         assert :erlang.rem(5, :abc)
       end
+    end
+  end
+
+  describe "round/1" do
+    test "rounds positive float with fractional part less than 0.5 down" do
+      assert :erlang.round(1.23) == 1
+    end
+
+    test "rounds positive float with fractional part greater than 0.5 up" do
+      assert :erlang.round(1.67) == 2
+    end
+
+    test "rounds positive float with fractional part equal to 0.5 away from zero (up)" do
+      assert :erlang.round(5.5) == 6
+    end
+
+    test "rounds negative float with fractional part less than 0.5 up toward zero" do
+      assert :erlang.round(-1.23) == -1
+    end
+
+    test "rounds negative float with fractional part greater than 0.5 down away from zero" do
+      assert :erlang.round(-1.67) == -2
+    end
+
+    test "rounds negative float with fractional part equal to 0.5 away from zero (down)" do
+      assert :erlang.round(-5.5) == -6
+    end
+
+    test "keeps positive float without fractional part unchanged" do
+      assert :erlang.round(1.0) == 1
+    end
+
+    test "keeps negative float without fractional part unchanged" do
+      assert :erlang.round(-1.0) == -1
+    end
+
+    test "keeps signed negative zero float unchanged" do
+      assert :erlang.round(-0.0) == 0
+    end
+
+    test "keeps signed positive zero float unchanged" do
+      assert :erlang.round(+0.0) == 0
+    end
+
+    test "keeps unsigned zero float unchanged" do
+      assert :erlang.round(0.0) == 0
+    end
+
+    test "rounds 0.5 away from zero" do
+      assert :erlang.round(0.5) == 1
+    end
+
+    test "rounds -0.5 away from zero" do
+      assert :erlang.round(-0.5) == -1
+    end
+
+    test "keeps positive integer unchanged" do
+      assert :erlang.round(1) == 1
+    end
+
+    test "keeps negative integer unchanged" do
+      assert :erlang.round(-1) == -1
+    end
+
+    test "keeps zero integer unchanged" do
+      assert :erlang.round(0) == 0
+    end
+
+    test "handles MAX_SAFE_INTEGER float" do
+      # Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      assert :erlang.round(9_007_199_254_740_991.0) == 9_007_199_254_740_991
+    end
+
+    test "handles MIN_SAFE_INTEGER float" do
+      # Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      assert :erlang.round(-9_007_199_254_740_991.0) == -9_007_199_254_740_991
+    end
+
+    test "handles large float that loses precision" do
+      # This demonstrates that float representation limits apply before rounding
+      # 36_028_797_018_963_969.0 cannot be represented exactly as a float
+      # It's stored as 36_028_797_018_963_968.0
+      assert :erlang.round(36_028_797_018_963_969.0) == 36_028_797_018_963_968
+    end
+
+    test "raises ArgumentError if the argument is not a number" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a number"),
+                   {:erlang, :round, [:abc]}
     end
   end
 
@@ -3723,6 +4901,31 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
     end
   end
 
+  # Simplified tests since JS port delegates to :os.system_time/0
+  describe "system_time/0" do
+    # Note: JS test is named "delegates to :os.system_time/0"
+    test "returns current system time in native time unit (nanoseconds)" do
+      result = :erlang.system_time()
+      expected = :os.system_time()
+
+      assert is_integer(result)
+      assert abs(result - expected) < 10_000_000
+    end
+  end
+
+  # Simplified tests since JS port delegates to :os.system_time/1
+  describe "system_time/1" do
+    # Note: JS test is named "delegates to :os.system_time/1"
+    test "returns current system time in the given time unit" do
+      unit = :microsecond
+      result = :erlang.system_time(unit)
+      expected = :os.system_time(unit)
+
+      assert is_integer(result)
+      assert abs(result - expected) < 10_000
+    end
+  end
+
   describe "tl/1" do
     test "proper list, 1 item" do
       assert :erlang.tl([1]) == []
@@ -3742,6 +4945,58 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
 
     test "improper list, 3 items" do
       assert :erlang.tl([1, 2 | 3]) == [2 | 3]
+    end
+  end
+
+  describe "time_offset/0" do
+    test "delegates to time_offset/1 with :native" do
+      assert :erlang.time_offset() == :erlang.time_offset(:native)
+    end
+  end
+
+  describe "time_offset/1" do
+    @units [:native, :second, :millisecond, :microsecond, :nanosecond]
+
+    test "all allowed units return integer" do
+      for u <- @units, do: assert(is_integer(:erlang.time_offset(u)))
+    end
+
+    test "coarser units yield smaller absolute values" do
+      nano = abs(:erlang.time_offset(:nanosecond))
+      sec = abs(:erlang.time_offset(:second))
+      if nano > 1_000_000_000, do: assert(sec < nano)
+    end
+
+    @tag :slow
+    test "drifts slowly between two calls" do
+      t1 = :erlang.time_offset(:nanosecond)
+      :timer.sleep(100)
+      t2 = :erlang.time_offset(:nanosecond)
+      drift = abs(t2 - t1)
+      # allow ±50 ms for NTP jitter in CI
+      assert drift <= 50_000_000
+    end
+
+    test "with positive integer unit" do
+      assert is_integer(:erlang.time_offset(1000))
+    end
+
+    test "raises ArgumentError when unit is less than 1" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :time_offset, [0]}
+    end
+
+    test "raises ArgumentError when unit is negative" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :time_offset, [-1]}
+    end
+
+    test "raises ArgumentError when unit is not a valid time unit atom" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "invalid time unit"),
+                   {:erlang, :time_offset, [:invalid]}
     end
   end
 
@@ -3786,6 +5041,22 @@ defmodule Hologram.ExJsConsistency.Erlang.ErlangTest do
       assert_error ArgumentError,
                    build_argument_error_msg(1, "not a number"),
                    {:erlang, :trunc, [:abc]}
+    end
+  end
+
+  describe "tuple_size/1" do
+    test "returns the number of elements in the tuple" do
+      assert :erlang.tuple_size({1, 2, 3}) == 3
+    end
+
+    test "returns 0 for an empty tuple" do
+      assert :erlang.tuple_size({}) == 0
+    end
+
+    test "raises ArgumentError if the argument is not a tuple" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not a tuple"),
+                   {:erlang, :tuple_size, [:abc]}
     end
   end
 

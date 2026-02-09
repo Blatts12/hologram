@@ -18,6 +18,293 @@ defineGlobalErlangAndElixirModules();
 // Always update both together.
 
 describe("Erlang_String", () => {
+  describe("find/2", () => {
+    const testedFun = Erlang_String["find/2"];
+
+    it("delegates to find/3 with :leading direction", () => {
+      const string = Type.bitstring("ab..cd..ef");
+      const pattern = Type.bitstring("..");
+
+      assert.deepStrictEqual(
+        testedFun(string, pattern),
+        Erlang_String["find/3"](string, pattern, Type.atom("leading")),
+      );
+    });
+  });
+
+  describe("find/3", () => {
+    const find = Erlang_String["find/3"];
+
+    describe("direction variations", () => {
+      it("with direction :leading finds first occurrence", () => {
+        const result = find(
+          Type.bitstring("ab..cd..ef"),
+          Type.bitstring(".."),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(result, Type.bitstring("..cd..ef"));
+      });
+
+      it("with direction :trailing finds last occurrence", () => {
+        const result = find(
+          Type.bitstring("ab..cd..ef"),
+          Type.bitstring(".."),
+          Type.atom("trailing"),
+        );
+
+        assert.deepStrictEqual(result, Type.bitstring("..ef"));
+      });
+    });
+
+    describe("pattern not found", () => {
+      it("returns :nomatch with :leading direction", () => {
+        const result = find(
+          Type.bitstring("ab..cd..ef"),
+          Type.bitstring("x"),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(result, Type.atom("nomatch"));
+      });
+
+      it("returns :nomatch with :trailing direction", () => {
+        const result = find(
+          Type.bitstring("ab..cd..ef"),
+          Type.bitstring("x"),
+          Type.atom("trailing"),
+        );
+
+        assert.deepStrictEqual(result, Type.atom("nomatch"));
+      });
+    });
+
+    describe("pattern position edge cases", () => {
+      it("when pattern is at the start of the string", () => {
+        const result = find(
+          Type.bitstring("..abcd"),
+          Type.bitstring(".."),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(result, Type.bitstring("..abcd"));
+      });
+
+      it("when pattern is at the end of the string", () => {
+        const result = find(
+          Type.bitstring("abcd.."),
+          Type.bitstring(".."),
+          Type.atom("trailing"),
+        );
+
+        assert.deepStrictEqual(result, Type.bitstring(".."));
+      });
+
+      it("with single character pattern", () => {
+        const result = find(
+          Type.bitstring("ab..cd..ef"),
+          Type.bitstring("."),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(result, Type.bitstring("..cd..ef"));
+      });
+    });
+
+    describe("input edge cases", () => {
+      it("with empty pattern returns string as-is", () => {
+        const result = find(
+          Type.bitstring("Hello World"),
+          Type.bitstring(""),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(result, Type.bitstring("Hello World"));
+      });
+
+      it("with empty string and empty pattern", () => {
+        const result = find(
+          Type.bitstring(""),
+          Type.bitstring(""),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(result, Type.bitstring(""));
+      });
+
+      it("with empty string and non-empty pattern", () => {
+        const result = find(
+          Type.bitstring(""),
+          Type.bitstring("x"),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(result, Type.atom("nomatch"));
+      });
+
+      it("with unicode pattern", () => {
+        const result = find(
+          Type.bitstring("Hello 👋 World 👋 End"),
+          Type.bitstring("👋"),
+          Type.atom("trailing"),
+        );
+
+        assert.deepStrictEqual(result, Type.bitstring("👋 End"));
+      });
+
+      it("when pattern equals string", () => {
+        const result = find(
+          Type.bitstring("abc"),
+          Type.bitstring("abc"),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(result, Type.bitstring("abc"));
+      });
+    });
+
+    describe("charlist input", () => {
+      it("with charlist string and charlist pattern", () => {
+        const result = find(
+          Type.charlist("ab..cd..ef"),
+          Type.charlist(".."),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(result, Type.charlist("..cd..ef"));
+      });
+
+      it("with charlist string and binary pattern", () => {
+        const result = find(
+          Type.charlist("ab..cd..ef"),
+          Type.bitstring(".."),
+          Type.atom("trailing"),
+        );
+
+        assert.deepStrictEqual(result, Type.charlist("..ef"));
+      });
+
+      it("with binary string and charlist pattern", () => {
+        const result = find(
+          Type.bitstring("ab..cd..ef"),
+          Type.charlist(".."),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(result, Type.bitstring("..cd..ef"));
+      });
+
+      it("returns :nomatch for charlist when pattern not found", () => {
+        const result = find(
+          Type.charlist("ab..cd..ef"),
+          Type.charlist("x"),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(result, Type.atom("nomatch"));
+      });
+
+      it("with empty pattern returns charlist as-is", () => {
+        const result = find(
+          Type.charlist("Hello World"),
+          Type.charlist(""),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(result, Type.charlist("Hello World"));
+      });
+    });
+
+    describe("error cases", () => {
+      it("raises MatchError if the first argument is not valid chardata", () => {
+        const invalidArg = Type.atom("abc");
+
+        assertBoxedError(
+          () => find(invalidArg, Type.bitstring("_"), Type.atom("leading")),
+          "MatchError",
+          Interpreter.buildMatchErrorMsg(invalidArg),
+        );
+      });
+
+      it("raises MatchError if the first argument is a non-binary bitstring", () => {
+        const nonBinaryBitstring = Type.bitstring([1, 0, 1]);
+
+        assertBoxedError(
+          () =>
+            find(nonBinaryBitstring, Type.bitstring("x"), Type.atom("leading")),
+          "MatchError",
+          Interpreter.buildMatchErrorMsg(nonBinaryBitstring),
+        );
+      });
+
+      it("raises ArgumentError if the second argument is not valid chardata", () => {
+        assertBoxedError(
+          () =>
+            find(
+              Type.bitstring("Hello World"),
+              Type.atom("abc"),
+              Type.atom("leading"),
+            ),
+          "ArgumentError",
+          Interpreter.buildArgumentErrorMsg(
+            1,
+            "not valid character data (an iodata term)",
+          ),
+        );
+      });
+
+      it("raises ArgumentError if the second argument is a non-binary bitstring", () => {
+        assertBoxedError(
+          () =>
+            find(
+              Type.bitstring("Hello World"),
+              Type.bitstring([1, 0, 1]),
+              Type.atom("leading"),
+            ),
+          "ArgumentError",
+          Interpreter.buildArgumentErrorMsg(
+            1,
+            "not valid character data (an iodata term)",
+          ),
+        );
+      });
+
+      it("raises FunctionClauseError if the third argument is not an atom", () => {
+        assertBoxedError(
+          () =>
+            find(
+              Type.bitstring("Hello World"),
+              Type.bitstring(" "),
+              Type.bitstring("leading"),
+            ),
+          "FunctionClauseError",
+          Interpreter.buildFunctionClauseErrorMsg(":string.find/3", [
+            Type.bitstring("Hello World"),
+            Type.bitstring(" "),
+            Type.bitstring("leading"),
+          ]),
+        );
+      });
+
+      it("raises FunctionClauseError if the third argument is an unrecognized atom", () => {
+        assertBoxedError(
+          () =>
+            find(
+              Type.bitstring("Hello World"),
+              Type.bitstring(" "),
+              Type.atom("all"),
+            ),
+          "FunctionClauseError",
+          Interpreter.buildFunctionClauseErrorMsg(":string.find/3", [
+            Type.bitstring("Hello World"),
+            Type.bitstring(" "),
+            Type.atom("all"),
+          ]),
+        );
+      });
+    });
+  });
+
   describe("join/2", () => {
     const join = Erlang_String["join/2"];
 
@@ -189,6 +476,517 @@ describe("Erlang_String", () => {
         () => join(list, separator),
         "ArgumentError",
         "argument error",
+      );
+    });
+  });
+
+  describe("replace/3", () => {
+    const replace3 = Erlang_String["replace/3"];
+    const replace4 = Erlang_String["replace/4"];
+
+    it("delegates to replace/4 with :leading direction", () => {
+      // Use a string with multiple occurrences of the pattern to verify :leading (not :all or :trailing)
+      const string = Type.bitstring("a-b-c");
+
+      const pattern = Type.bitstring("-");
+      const replacement = Type.bitstring("_");
+
+      const result = replace3(string, pattern, replacement);
+
+      assert.deepStrictEqual(
+        result,
+        Type.list([
+          Type.bitstring("a"),
+          Type.bitstring("_"),
+          Type.bitstring("b-c"),
+        ]),
+      );
+
+      assert.deepStrictEqual(
+        result,
+        replace4(string, pattern, replacement, Type.atom("leading")),
+      );
+    });
+  });
+
+  describe("replace/4", () => {
+    const replace = Erlang_String["replace/4"];
+    const string = Type.bitstring("Hello World !");
+
+    describe("direction variations", () => {
+      it("with direction :all", () => {
+        const result = replace(
+          string,
+          Type.bitstring(" "),
+          Type.bitstring("_"),
+          Type.atom("all"),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.bitstring("Hello"),
+            Type.bitstring("_"),
+            Type.bitstring("World"),
+            Type.bitstring("_"),
+            Type.bitstring("!"),
+          ]),
+        );
+      });
+
+      it("with direction :leading", () => {
+        const result = replace(
+          string,
+          Type.bitstring(" "),
+          Type.bitstring("_"),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.bitstring("Hello"),
+            Type.bitstring("_"),
+            Type.bitstring("World !"),
+          ]),
+        );
+      });
+
+      it("with direction :trailing", () => {
+        const result = replace(
+          string,
+          Type.bitstring(" "),
+          Type.bitstring("_"),
+          Type.atom("trailing"),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.bitstring("Hello World"),
+            Type.bitstring("_"),
+            Type.bitstring("!"),
+          ]),
+        );
+      });
+    });
+
+    describe("pattern position edge cases", () => {
+      it("when pattern is at the start of the string", () => {
+        const result = replace(
+          Type.bitstring("Hello"),
+          Type.bitstring("He"),
+          Type.bitstring("A"),
+          Type.atom("leading"),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.bitstring(""),
+            Type.bitstring("A"),
+            Type.bitstring("llo"),
+          ]),
+        );
+      });
+
+      it("when pattern is at the end of the string", () => {
+        const result = replace(
+          Type.bitstring("Hello"),
+          Type.bitstring("lo"),
+          Type.bitstring("p"),
+          Type.atom("trailing"),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.bitstring("Hel"),
+            Type.bitstring("p"),
+            Type.bitstring(""),
+          ]),
+        );
+      });
+
+      it("with consecutive patterns", () => {
+        const result = replace(
+          Type.bitstring("lololo"),
+          Type.bitstring("lo"),
+          Type.bitstring("ha"),
+          Type.atom("all"),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.bitstring(""),
+            Type.bitstring("ha"),
+            Type.bitstring(""),
+            Type.bitstring("ha"),
+            Type.bitstring(""),
+            Type.bitstring("ha"),
+            Type.bitstring(""),
+          ]),
+        );
+      });
+    });
+
+    describe("input edge cases", () => {
+      it("with empty pattern", () => {
+        const result = replace(
+          string,
+          Type.bitstring(""),
+          Type.bitstring("_"),
+          Type.atom("all"),
+        );
+
+        assert.deepStrictEqual(result, Type.list([string]));
+      });
+
+      it("when pattern is not found", () => {
+        const result = replace(
+          string,
+          Type.bitstring("."),
+          Type.bitstring("_"),
+          Type.atom("all"),
+        );
+
+        assert.deepStrictEqual(result, Type.list([string]));
+      });
+
+      it("with empty replacement", () => {
+        const result = replace(
+          Type.bitstring("Hello World"),
+          Type.bitstring(" "),
+          Type.bitstring(""),
+          Type.atom("all"),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.bitstring("Hello"),
+            Type.bitstring(""),
+            Type.bitstring("World"),
+          ]),
+        );
+      });
+
+      it("with unicode pattern", () => {
+        const result = replace(
+          Type.bitstring("Hello 👋 World"),
+          Type.bitstring("👋"),
+          Type.bitstring("🌍"),
+          Type.atom("all"),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.bitstring("Hello "),
+            Type.bitstring("🌍"),
+            Type.bitstring(" World"),
+          ]),
+        );
+      });
+    });
+
+    describe("replacement type variations", () => {
+      it("accepts atom as replacement and inserts it as-is", () => {
+        const result = replace(
+          string,
+          Type.bitstring(" "),
+          Type.atom("_"),
+          Type.atom("all"),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.bitstring("Hello"),
+            Type.atom("_"),
+            Type.bitstring("World"),
+            Type.atom("_"),
+            Type.bitstring("!"),
+          ]),
+        );
+      });
+
+      it("accepts charlist as replacement and inserts it as-is", () => {
+        const result = replace(
+          string,
+          Type.bitstring(" "),
+          Type.charlist("_"),
+          Type.atom("all"),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.bitstring("Hello"),
+            Type.charlist("_"),
+            Type.bitstring("World"),
+            Type.charlist("_"),
+            Type.bitstring("!"),
+          ]),
+        );
+      });
+    });
+
+    describe("error cases", () => {
+      it("raises MatchError if the first argument is not valid chardata", () => {
+        const invalidArg = Type.atom("hello_world");
+
+        assertBoxedError(
+          () =>
+            replace(
+              invalidArg,
+              Type.bitstring("_"),
+              Type.bitstring(" "),
+              Type.atom("all"),
+            ),
+          "MatchError",
+          Interpreter.buildMatchErrorMsg(invalidArg),
+        );
+      });
+
+      it("raises ArgumentError if the second argument is not valid chardata", () => {
+        assertBoxedError(
+          () =>
+            replace(
+              Type.bitstring("Hello_World_!"),
+              Type.atom("_"),
+              Type.bitstring(" "),
+              Type.atom("all"),
+            ),
+          "ArgumentError",
+          Interpreter.buildArgumentErrorMsg(
+            1,
+            "not valid character data (an iodata term)",
+          ),
+        );
+      });
+
+      it("raises CaseClauseError if the fourth argument is not an atom", () => {
+        assertBoxedError(
+          () =>
+            replace(
+              Type.bitstring("Hello World !"),
+              Type.bitstring(" "),
+              Type.bitstring("_"),
+              Type.bitstring("all"),
+            ),
+          "CaseClauseError",
+          'no case clause matching: "all"',
+        );
+      });
+
+      it("raises CaseClauseError if the fourth argument is an unrecognized atom", () => {
+        assertBoxedError(
+          () =>
+            replace(
+              Type.bitstring("Hello World"),
+              Type.bitstring(" "),
+              Type.bitstring("_"),
+              Type.atom("invalid"),
+            ),
+          "CaseClauseError",
+          "no case clause matching: :invalid",
+        );
+      });
+    });
+  });
+
+  describe("split/2", () => {
+    const testedFun = Erlang_String["split/2"];
+
+    it("delegates to split/3 with :leading direction", () => {
+      const subject = Type.bitstring("a-b-c");
+      const pattern = Type.bitstring("-");
+
+      assert.deepStrictEqual(
+        testedFun(subject, pattern),
+        Erlang_String["split/3"](subject, pattern, Type.atom("leading")),
+      );
+    });
+  });
+
+  describe("split/3", () => {
+    const split = Erlang_String["split/3"];
+    const subject = Type.bitstring("Hello World !");
+
+    it("with empty pattern", () => {
+      const result = split(subject, Type.bitstring(""), Type.atom("all"));
+
+      assert.deepStrictEqual(result, Type.list([Bitstring.toText(subject)]));
+    });
+
+    it("with pattern not found in subject", () => {
+      const result = split(subject, Type.bitstring("."), Type.atom("all"));
+
+      assert.deepStrictEqual(result, Type.list([Bitstring.toText(subject)]));
+    });
+
+    it("with direction :all", () => {
+      const result = split(subject, Type.bitstring(" "), Type.atom("all"));
+
+      assert.deepStrictEqual(result, Type.list(["Hello", "World", "!"]));
+    });
+
+    it("with direction :leading", () => {
+      const result = split(subject, Type.bitstring(" "), Type.atom("leading"));
+
+      assert.deepStrictEqual(result, Type.list(["Hello", "World !"]));
+    });
+
+    it("with direction :trailing", () => {
+      const result = split(subject, Type.bitstring(" "), Type.atom("trailing"));
+
+      assert.deepStrictEqual(result, Type.list(["Hello World", "!"]));
+    });
+
+    it("with pattern at the start of the subject", () => {
+      const result = split(subject, Type.bitstring("H"), Type.atom("leading"));
+
+      assert.deepStrictEqual(result, Type.list(["", "ello World !"]));
+    });
+
+    it("with pattern at the end of the subject", () => {
+      const result = split(subject, Type.bitstring("!"), Type.atom("trailing"));
+
+      assert.deepStrictEqual(result, Type.list(["Hello World ", ""]));
+    });
+
+    it("with consecutive pattern", () => {
+      const result = split(subject, Type.bitstring("l"), Type.atom("all"));
+
+      assert.deepStrictEqual(result, Type.list(["He", "", "o Wor", "d !"]));
+    });
+
+    it("with unicode pattern", () => {
+      const result = split(
+        Type.bitstring("Hello 👋 World"),
+        Type.bitstring("👋"),
+        Type.atom("all"),
+      );
+
+      assert.deepStrictEqual(result, Type.list(["Hello ", " World"]));
+    });
+
+    it("with charlist subject and charlist pattern", () => {
+      const result = split(
+        Type.charlist("Hello World"),
+        Type.charlist(" "),
+        Type.atom("all"),
+      );
+
+      assert.deepStrictEqual(
+        result,
+        Type.list([Type.charlist("Hello"), Type.charlist("World")]),
+      );
+    });
+
+    it("with charlist subject and binary pattern", () => {
+      const result = split(
+        Type.charlist("Hello World"),
+        Type.bitstring(" "),
+        Type.atom("all"),
+      );
+
+      assert.deepStrictEqual(
+        result,
+        Type.list([Type.charlist("Hello"), Type.charlist("World")]),
+      );
+    });
+
+    it("with binary subject and charlist pattern", () => {
+      const result = split(
+        Type.bitstring("Hello World"),
+        Type.charlist(" "),
+        Type.atom("all"),
+      );
+
+      assert.deepStrictEqual(result, Type.list(["Hello", "World"]));
+    });
+
+    it("raises MatchError if the first argument is not valid chardata", () => {
+      assertBoxedError(
+        () =>
+          split(
+            Type.atom("hello_world"),
+            Type.bitstring("_"),
+            Type.atom("all"),
+          ),
+        "MatchError",
+        Interpreter.buildMatchErrorMsg(Type.atom("hello_world")),
+      );
+    });
+
+    it("raises MatchError if the first argument is a non-binary bitstring", () => {
+      const nonBinaryBitstring = Type.bitstring([1, 0, 1]);
+
+      assertBoxedError(
+        () => split(nonBinaryBitstring, Type.bitstring(" "), Type.atom("all")),
+        "MatchError",
+        Interpreter.buildMatchErrorMsg(nonBinaryBitstring),
+      );
+    });
+
+    it("raises ArgumentError if the second argument is not valid chardata", () => {
+      assertBoxedError(
+        () =>
+          split(
+            Type.bitstring("Hello_World_!"),
+            Type.atom("_"),
+            Type.atom("all"),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not valid character data (an iodata term)",
+        ),
+      );
+    });
+
+    it("raises ArgumentError if the second argument is a non-binary bitstring", () => {
+      assertBoxedError(
+        () =>
+          split(
+            Type.bitstring("Hello World"),
+            Type.bitstring([1, 0, 1]),
+            Type.atom("all"),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not valid character data (an iodata term)",
+        ),
+      );
+    });
+
+    it("raises CaseClauseError if the third argument is not an atom", () => {
+      assertBoxedError(
+        () =>
+          split(
+            Type.bitstring("Hello World !"),
+            Type.bitstring(" "),
+            Type.bitstring("all"),
+          ),
+        "CaseClauseError",
+        'no case clause matching: "all"',
+      );
+    });
+
+    it("raises CaseClauseError if the third argument is an unrecognized atom", () => {
+      assertBoxedError(
+        () =>
+          split(
+            Type.bitstring("hello world"),
+            Type.bitstring(" "),
+            Type.atom("invalid"),
+          ),
+        "CaseClauseError",
+        "no case clause matching: :invalid",
       );
     });
   });

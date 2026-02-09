@@ -98,6 +98,326 @@ defmodule Hologram.ExJsConsistency.Erlang.FilenameTest do
     end
   end
 
+  describe "basename/2" do
+    test "removes matching extension from simple filename" do
+      assert :filename.basename("file.txt", ".txt") == "file"
+    end
+
+    test "removes matching extension from path" do
+      assert :filename.basename("/path/to/file.txt", ".txt") == "file"
+    end
+
+    test "removes multi-part extension" do
+      assert :filename.basename("file.tar.gz", ".tar.gz") == "file"
+    end
+
+    test "removes partial extension when multiple exist" do
+      assert :filename.basename("file.tar.gz", ".gz") == "file.tar"
+    end
+
+    test "returns basename when extension does not match" do
+      assert :filename.basename("noextension", ".txt") == "noextension"
+    end
+
+    test "returns basename when extension partially matches" do
+      assert :filename.basename("file.txt", "x") == "file.txt"
+    end
+
+    test "handles root path" do
+      assert :filename.basename("/", "x") == ""
+    end
+
+    test "handles empty filename" do
+      assert :filename.basename("", ".txt") == ""
+    end
+
+    test "removes extension from double-dotted filename" do
+      assert :filename.basename("file.txt.txt", ".txt") == "file.txt"
+    end
+
+    test "removes extension that equals the entire basename" do
+      assert :filename.basename(".hidden", ".hidden") == ""
+    end
+
+    test "handles charlist filename and extension" do
+      assert :filename.basename(~c"file.txt", ~c".txt") == ~c"file"
+    end
+
+    test "handles charlist with path" do
+      assert :filename.basename(~c"path/to/file.erl", ~c".erl") == ~c"file"
+    end
+
+    test "handles atom filename and extension" do
+      assert :filename.basename(:"file.txt", :".txt") == ~c"file"
+    end
+
+    test "returns empty list for root with charlist" do
+      assert :filename.basename(~c"/", ~c"x") == []
+    end
+
+    test "handles iolist filename" do
+      assert :filename.basename([~c"path/to/", ?f, ?i, ?l, ?e, ~c".txt"], ".txt") ==
+               "file"
+    end
+
+    test "returns basename when extension is longer than basename" do
+      assert :filename.basename("a.b", ".longer") == "a.b"
+    end
+
+    test "handles extension with no dot" do
+      assert :filename.basename("file.txt", "txt") == "file."
+    end
+
+    test "handles empty extension - returns full basename" do
+      assert :filename.basename("file.txt", "") == "file.txt"
+    end
+
+    test "handles path with trailing slash" do
+      assert :filename.basename("path/to/dir/", ".txt") == "dir"
+    end
+
+    test "handles multiple consecutive slashes" do
+      assert :filename.basename("path//to//file.txt", ".txt") == "file"
+    end
+
+    test "handles only slashes" do
+      assert :filename.basename("///", "x") == ""
+    end
+
+    test "handles hidden file with extension" do
+      assert :filename.basename(".hidden.txt", ".txt") == ".hidden"
+    end
+
+    test "handles file with only dot as name" do
+      assert :filename.basename(".", ".") == ""
+    end
+
+    test "handles file with double dots" do
+      assert :filename.basename("..", ".") == "."
+    end
+
+    test "handles long extension" do
+      assert :filename.basename("archive.tar.gz.bak", ".tar.gz.bak") == "archive"
+    end
+
+    test "matches binary/charlist mismatch - binary filename, charlist ext" do
+      assert :filename.basename("file.erl", ~c".erl") == "file"
+    end
+
+    test "matches charlist filename, binary ext" do
+      assert :filename.basename(~c"file.erl", ".erl") == "file"
+    end
+
+    test "returns basename when extension equals basename" do
+      assert :filename.basename("file", "file") == ""
+    end
+
+    test "handles iolist with mixed types" do
+      assert :filename.basename(
+               [~c"path/to/", ?f, ?i, ?l, ?e, ~c".erl"],
+               ~c".erl"
+             ) == ~c"file"
+    end
+
+    test "handles case-sensitive extension matching" do
+      assert :filename.basename("file.TXT", ".txt") == "file.TXT"
+    end
+
+    test "handles multi-byte UTF-8 characters in filename" do
+      assert :filename.basename("文件.txt", ".txt") == "文件"
+    end
+
+    test "handles multi-byte UTF-8 characters in extension" do
+      assert :filename.basename("file.日本", ".日本") == "file"
+    end
+
+    test "handles path with dot in directory name but not matching extension" do
+      assert :filename.basename("path.dir/file.txt", ".dir") == "file.txt"
+    end
+
+    test "returns charlist when basename/1 returns charlist and no match" do
+      result = :filename.basename(~c"path/to/noextension", ~c".txt")
+      expected = :filename.basename(~c"path/to/noextension")
+
+      assert result == expected
+    end
+
+    test "handles empty charlist extension" do
+      assert :filename.basename(~c"file.txt", ~c"") == ~c"file.txt"
+    end
+
+    test "empty list input" do
+      assert :filename.basename([], ~c".txt") == []
+    end
+
+    test "binary with invalid UTF-8 bytes" do
+      # <<0xFF, 0xFE, ".txt">>
+      filename = <<0xFF, 0xFE, ".txt">>
+
+      # Should preserve raw bytes for the invalid UTF-8
+      expected = <<0xFF, 0xFE>>
+
+      assert :filename.basename(filename, ".txt") == expected
+    end
+
+    test "iolist with invalid UTF-8 bytes" do
+      # [0xFF, 0xFE, ?., ?t, ?x, ?t] - charlist with invalid UTF-8
+      filename = [0xFF, 0xFE, ?., ?t, ?x, ?t]
+
+      expected = [0xFF, 0xFE]
+
+      assert :filename.basename(filename, ~c".txt") == expected
+    end
+
+    test "raises FunctionClauseError if filename is invalid" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.do_flatten/2", [123, []]),
+                   fn -> :filename.basename(123, ".txt") end
+    end
+
+    test "raises FunctionClauseError if extension is invalid" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.do_flatten/2", [123, []]),
+                   fn -> :filename.basename("file.txt", 123) end
+    end
+
+    test "raises FunctionClauseError if filename is a non-binary bitstring" do
+      arg = <<1::1, 0::1, 1::1>>
+
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.do_flatten/2", [arg, []]),
+                   fn -> :filename.basename(arg, ".txt") end
+    end
+
+    test "raises FunctionClauseError if extension is a non-binary bitstring" do
+      arg = <<1::1, 0::1, 1::1>>
+
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.do_flatten/2", [arg, []]),
+                   fn -> :filename.basename("file.txt", arg) end
+    end
+  end
+
+  describe "dirname/1" do
+    test "relative path with multiple components" do
+      assert :filename.dirname("foo/bar/baz.erl") == "foo/bar"
+    end
+
+    test "absolute path with multiple components" do
+      assert :filename.dirname("/foo/bar") == "/foo"
+    end
+
+    test "single filename without path" do
+      assert :filename.dirname("foo") == "."
+    end
+
+    test "root path" do
+      assert :filename.dirname("/") == "/"
+    end
+
+    test "absolute path with one component" do
+      assert :filename.dirname("/foo") == "/"
+    end
+
+    test "absolute path with trailing slash" do
+      assert :filename.dirname("/foo/") == "/foo"
+    end
+
+    test "relative path with trailing slash" do
+      assert :filename.dirname("foo/") == "foo"
+    end
+
+    test "multi-component path with trailing slash" do
+      assert :filename.dirname("foo/bar/baz/") == "foo/bar/baz"
+    end
+
+    test "multi-component path with multiple trailing slashes" do
+      assert :filename.dirname("foo/bar//") == "foo/bar"
+    end
+
+    test "single dot" do
+      assert :filename.dirname(".") == "."
+    end
+
+    test "double dots" do
+      assert :filename.dirname("..") == "."
+    end
+
+    test "consecutive slashes in middle of path" do
+      assert :filename.dirname("foo//bar") == "foo"
+    end
+
+    test "empty string" do
+      assert :filename.dirname("") == "."
+    end
+
+    test "filename with extension only" do
+      assert :filename.dirname("foo.txt") == "."
+    end
+
+    test "atom input" do
+      assert :filename.dirname(:file) == ~c"."
+    end
+
+    test "atom input with path" do
+      assert :filename.dirname(:"foo/bar") == ~c"foo"
+    end
+
+    test "list input" do
+      assert :filename.dirname([?f, ?o, ?o]) == [?.]
+    end
+
+    test "iolist input with path" do
+      assert :filename.dirname([~c"foo/", ?b, ?a, ?r]) == ~c"foo"
+    end
+
+    test "empty list input" do
+      assert :filename.dirname([]) == ~c"."
+    end
+
+    test "multiple trailing slashes" do
+      assert :filename.dirname("foo/bar///") == "foo/bar"
+    end
+
+    test "handles invalid UTF-8 binary" do
+      filename = <<255, 47, 254>>
+
+      assert :filename.dirname(filename) == <<255>>
+    end
+
+    test "handles invalid UTF-8 list" do
+      filename = [255, 47, 254]
+
+      assert :filename.dirname(filename) == [255]
+    end
+
+    test "invalid UTF-8 with no separator" do
+      filename = <<255, 254, 253>>
+
+      assert :filename.dirname(filename) == "."
+    end
+
+    test "invalid UTF-8 with trailing separators" do
+      filename = <<255, 47, 47>>
+
+      assert :filename.dirname(filename) == <<255>>
+    end
+
+    test "raises FunctionClauseError if the argument is not a bitstring or atom or list" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.do_flatten/2", [123, []]),
+                   fn -> :filename.dirname(123) end
+    end
+
+    test "raises FunctionClauseError if the argument is a non-binary bitstring" do
+      arg = <<1::1, 0::1, 1::1>>
+
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.do_flatten/2", [arg, []]),
+                   fn -> :filename.dirname(arg) end
+    end
+  end
+
   describe "extension/1" do
     test "file with extension" do
       assert :filename.extension("foo.erl") == ".erl"
@@ -379,6 +699,12 @@ defmodule Hologram.ExJsConsistency.Erlang.FilenameTest do
                    build_function_clause_error_msg(":filename.join/1", [[]]),
                    fn -> :filename.join([]) end
     end
+
+    test "raises FunctionClauseError if list contains invalid component type" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.join/1", [[123]]),
+                   fn -> :filename.join([123]) end
+    end
   end
 
   describe "join/2" do
@@ -482,6 +808,302 @@ defmodule Hologram.ExJsConsistency.Erlang.FilenameTest do
       assert_error FunctionClauseError,
                    build_function_clause_error_msg(":filename.join/2", ["usr", 123]),
                    fn -> :filename.join("usr", 123) end
+    end
+  end
+
+  describe "rootname/1" do
+    test "path with extension" do
+      assert :filename.rootname("/jam.src/foo.erl") == "/jam.src/foo"
+    end
+
+    test "path without extension" do
+      assert :filename.rootname("/jam.src/kalle") == "/jam.src/kalle"
+    end
+
+    test "filename with extension" do
+      assert :filename.rootname("foo.erl") == "foo"
+    end
+
+    test "filename without extension" do
+      assert :filename.rootname("foo") == "foo"
+    end
+
+    test "filename starting with dot" do
+      assert :filename.rootname(".foo") == ""
+    end
+
+    test "filename with multiple extensions" do
+      assert :filename.rootname("foo.bar.baz") == "foo.bar"
+    end
+
+    test "path with hidden file" do
+      assert :filename.rootname("path/to/.hidden") == "path/to/.hidden"
+    end
+
+    test "root path" do
+      assert :filename.rootname("/") == "/"
+    end
+
+    test "empty string" do
+      assert :filename.rootname("") == ""
+    end
+
+    test "path ending with dot" do
+      assert :filename.rootname("foo.") == "foo"
+    end
+
+    test "hidden file in root" do
+      assert :filename.rootname("/.bashrc") == "/.bashrc"
+    end
+
+    test "hidden file in subdirectory" do
+      assert :filename.rootname("/foo/.bashrc") == "/foo/.bashrc"
+    end
+
+    test "hidden file with extension" do
+      assert :filename.rootname(".bashrc.bak") == ".bashrc"
+    end
+
+    test "hidden file in subdirectory with extension" do
+      assert :filename.rootname("/foo/.bashrc.bak") == "/foo/.bashrc"
+    end
+
+    test "empty list input" do
+      assert :filename.rootname([]) == []
+    end
+
+    test "non-empty iolist input" do
+      assert :filename.rootname([~c"path/to/", ?f, ?i, ?l, ?e, ~c".txt"]) == ~c"path/to/file"
+    end
+
+    test "handles invalid UTF-8 bytewise (raw filename)" do
+      # Invalid UTF-8 bytes: <<255, 254, 253>>
+      invalid_utf8 = <<255, 254, 253>>
+
+      result = :filename.rootname(invalid_utf8)
+
+      # Should return unchanged since no extension
+      assert result == invalid_utf8
+    end
+
+    test "removes extension from invalid UTF-8 filename" do
+      # Invalid UTF-8 with extension: <<255, 254, 46, 253>> (0xFF 0xFE '.' 0xFD)
+      invalid_utf8_with_ext = <<255, 254, 46, 253>>
+
+      result = :filename.rootname(invalid_utf8_with_ext)
+
+      # Should remove ".253" (last dot and everything after)
+      assert result == <<255, 254>>
+    end
+
+    test "preserves invalid UTF-8 hidden file" do
+      # Invalid UTF-8 starting with slash-dot: <<47, 46, 255, 254>> ('/' '.' 0xFF 0xFE)
+      invalid_utf8_hidden = <<47, 46, 255, 254>>
+
+      result = :filename.rootname(invalid_utf8_hidden)
+
+      # Should not remove extension after slash
+      assert result == invalid_utf8_hidden
+    end
+
+    test "filename with trailing slash" do
+      assert :filename.rootname("foo.txt/") == "foo.txt/"
+    end
+
+    test "filename with double dots as extension" do
+      assert :filename.rootname("foo..txt") == "foo."
+    end
+
+    test "filename is just double dots" do
+      assert :filename.rootname("..") == "."
+    end
+
+    test "filename is three dots" do
+      assert :filename.rootname("...") == ".."
+    end
+
+    test "atom input" do
+      assert :filename.rootname(:"/jam.src/foo.erl") == ~c"/jam.src/foo"
+    end
+
+    test "iolist with invalid UTF-8 bytes" do
+      # Charlist with invalid UTF-8: [47, 102, 111, 111, 46, 0xFF, 0xFE]
+      # "/foo." + [0xFF, 0xFE]
+      filename = [?/, ?f, ?o, ?o, ?., 0xFF, 0xFE]
+
+      result = :filename.rootname(filename)
+
+      # Should return the root without the extension [0xFF, 0xFE]
+      # Result: [47, 102, 111, 111]
+      expected = [?/, ?f, ?o, ?o]
+
+      assert result == expected
+    end
+
+    test "raises FunctionClauseError if the argument is not a bitstring or atom or list" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.do_flatten/2", [123, []]),
+                   fn -> :filename.rootname(123) end
+    end
+
+    test "raises FunctionClauseError if the argument is a non-binary bitstring" do
+      arg = <<1::1, 0::1, 1::1>>
+
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.do_flatten/2", [arg, []]),
+                   fn -> :filename.rootname(arg) end
+    end
+  end
+
+  describe "rootname/2" do
+    test "removes matching extension" do
+      assert :filename.rootname("/jam.src/foo.erl", ".erl") == "/jam.src/foo"
+    end
+
+    test "does not remove non-matching extension" do
+      assert :filename.rootname("/jam.src/kalle.jam", ".erl") == "/jam.src/kalle.jam"
+    end
+
+    test "removes partial extension match" do
+      assert :filename.rootname("/jam.src/kalle.old.erl", ".erl") == "/jam.src/kalle.old"
+    end
+
+    test "removes extension from filename only" do
+      assert :filename.rootname("foo.erl", ".erl") == "foo"
+    end
+
+    test "does not remove if filename does not match extension" do
+      assert :filename.rootname("foo.beam", ".erl") == "foo.beam"
+    end
+
+    test "removes extension when filename equals extension" do
+      assert :filename.rootname(".bashrc", ".bashrc") == ""
+    end
+
+    test "does not remove extension after slash in root" do
+      assert :filename.rootname("/.erl", ".erl") == "/.erl"
+    end
+
+    test "does not remove extension after slash in subdirectory" do
+      assert :filename.rootname("/path/.erl", ".erl") == "/path/.erl"
+    end
+
+    test "empty extension" do
+      assert :filename.rootname("foo.erl", "") == "foo.erl"
+    end
+
+    test "empty filename" do
+      assert :filename.rootname("", ".erl") == ""
+    end
+
+    test "empty list filename input" do
+      assert :filename.rootname([], ".erl") == ""
+    end
+
+    test "iolist filename input" do
+      assert :filename.rootname([~c"foo", ~c".erl"], ".erl") == "foo"
+    end
+
+    test "iolist extension input" do
+      assert :filename.rootname("foo.erl", [~c".", ~c"erl"]) == "foo"
+    end
+
+    test "handles invalid UTF-8 filename bytewise (raw filename)" do
+      # Invalid UTF-8 bytes: <<255, 254, 253>>
+      invalid_utf8 = <<255, 254, 253>>
+
+      ext = <<253>>
+
+      result = :filename.rootname(invalid_utf8, ext)
+
+      # Should remove the last byte (253)
+      assert result == <<255, 254>>
+    end
+
+    test "handles invalid UTF-8 extension bytewise" do
+      filename = "foo.erl"
+
+      # Invalid UTF-8 extension
+      invalid_ext = <<255, 254>>
+
+      result = :filename.rootname(filename, invalid_ext)
+
+      # Should not remove anything (extension doesn't match)
+      assert result == filename
+    end
+
+    test "handles both filename and extension as invalid UTF-8" do
+      # Filename: <<255, 254, 46, 253>> (0xFF 0xFE '.' 0xFD)
+      invalid_filename = <<255, 254, 46, 253>>
+
+      # Extension: <<46, 253>> ('.' 0xFD)
+      invalid_ext = <<46, 253>>
+
+      result = :filename.rootname(invalid_filename, invalid_ext)
+
+      # Should remove the matching extension
+      assert result == <<255, 254>>
+    end
+
+    test "does not remove invalid UTF-8 extension after slash" do
+      # Filename: <<47, 255, 254>> ('/' 0xFF 0xFE)
+      invalid_filename = <<47, 255, 254>>
+
+      # Extension: <<255, 254>> (0xFF 0xFE)
+      invalid_ext = <<255, 254>>
+
+      result = :filename.rootname(invalid_filename, invalid_ext)
+
+      # Should not remove (extension is right after slash)
+      assert result == invalid_filename
+    end
+
+    test "extension without leading dot" do
+      assert :filename.rootname("foo.erl", "erl") == "foo."
+    end
+
+    test "extension longer than filename" do
+      assert :filename.rootname("foo", "foobar") == "foo"
+    end
+
+    test "extension with double dots" do
+      assert :filename.rootname("foo.erl", "..erl") == "foo.erl"
+    end
+
+    test "atom filename input" do
+      assert :filename.rootname(:"foo.erl", ".erl") == "foo"
+    end
+
+    test "atom extension input" do
+      assert :filename.rootname("foo.erl", :".erl") == "foo"
+    end
+
+    test "raises FunctionClauseError if the first argument is not a bitstring or atom or list" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.do_flatten/2", [123, []]),
+                   fn -> :filename.rootname(123, ".erl") end
+    end
+
+    test "raises FunctionClauseError if the first argument is a non-binary bitstring" do
+      arg = <<1::1, 0::1, 1::1>>
+
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.do_flatten/2", [arg, []]),
+                   fn -> :filename.rootname(arg, ".erl") end
+    end
+
+    test "raises FunctionClauseError if the second argument is not a bitstring or atom or list" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.do_flatten/2", [123, []]),
+                   fn -> :filename.rootname("foo.erl", 123) end
+    end
+
+    test "raises FunctionClauseError if the second argument is a non-binary bitstring" do
+      arg = <<1::1, 0::1, 1::1>>
+
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":filename.do_flatten/2", [arg, []]),
+                   fn -> :filename.rootname("foo.erl", arg) end
     end
   end
 

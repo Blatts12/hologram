@@ -11,16 +11,19 @@ import Erlang_Binary from "../../../assets/js/erlang/binary.mjs";
 import Erlang_Code from "../../../assets/js/erlang/code.mjs";
 import Erlang_Elixir_Aliases from "../../../assets/js/erlang/elixir_aliases.mjs";
 import Erlang_Elixir_Locals from "../../../assets/js/erlang/elixir_locals.mjs";
+import Erlang_Filelib from "../../../assets/js/erlang/filelib.mjs";
 import Erlang_Filename from "../../../assets/js/erlang/filename.mjs";
 import Erlang_Init from "../../../assets/js/erlang/init.mjs";
 import Erlang_Lists from "../../../assets/js/erlang/lists.mjs";
 import Erlang_Maps from "../../../assets/js/erlang/maps.mjs";
 import Erlang_Math from "../../../assets/js/erlang/math.mjs";
+import Erlang_Os from "../../../assets/js/erlang/os.mjs";
 import Erlang_Persistent_Term from "../../../assets/js/erlang/persistent_term.mjs";
 import Erlang_Rand from "../../../assets/js/erlang/rand.mjs";
 import Erlang_Re from "../../../assets/js/erlang/re.mjs";
 import Erlang_Sets from "../../../assets/js/erlang/sets.mjs";
 import Erlang_Unicode from "../../../assets/js/erlang/unicode.mjs";
+import Erlang_Uri_String from "../../../assets/js/erlang/uri_string.mjs";
 import HologramBoxedError from "../../../assets/js/errors/boxed_error.mjs";
 import HologramInterpreterError from "../../../assets/js/errors/interpreter_error.mjs";
 import Interpreter from "../../../assets/js/interpreter.mjs";
@@ -247,29 +250,39 @@ function defineElixirStringCharsModule() {
 export function defineGlobalErlangAndElixirModules() {
   globalThis.hologram ??= {};
 
-  globalThis.Erlang = Erlang;
-  globalThis.Erlang_Binary = Erlang_Binary;
-  globalThis.Erlang_Code = Erlang_Code;
-  globalThis.Erlang_Elixir_Aliases = Erlang_Elixir_Aliases;
-  globalThis.Erlang_Elixir_Locals = Erlang_Elixir_Locals;
-  globalThis.Erlang_Filename = Erlang_Filename;
-  globalThis.Erlang_Init = Erlang_Init;
-  globalThis.Erlang_Lists = Erlang_Lists;
-  globalThis.Erlang_Maps = Erlang_Maps;
-  globalThis.Erlang_Math = Erlang_Math;
-  globalThis.Erlang_Persistent_Term = Erlang_Persistent_Term;
-  globalThis.Erlang_Rand = Erlang_Rand;
-  globalThis.Erlang_Re = Erlang_Re;
-  globalThis.Erlang_Sets = Erlang_Sets;
-  globalThis.Erlang_Unicode = Erlang_Unicode;
-  globalThis.Elixir_Code = Elixir_Code;
-  globalThis.Elixir_Enum = defineElixirEnumModule();
+  defineGlobalModule("Erlang", Erlang);
+  defineGlobalModule("Erlang_Binary", Erlang_Binary);
+  defineGlobalModule("Erlang_Code", Erlang_Code);
+  defineGlobalModule("Erlang_Elixir_Aliases", Erlang_Elixir_Aliases);
+  defineGlobalModule("Erlang_Elixir_Locals", Erlang_Elixir_Locals);
+  defineGlobalModule("Erlang_Filelib", Erlang_Filelib);
+  defineGlobalModule("Erlang_Filename", Erlang_Filename);
+  defineGlobalModule("Erlang_Init", Erlang_Init);
+  defineGlobalModule("Erlang_Lists", Erlang_Lists);
+  defineGlobalModule("Erlang_Maps", Erlang_Maps);
+  defineGlobalModule("Erlang_Math", Erlang_Math);
+  defineGlobalModule("Erlang_Os", Erlang_Os);
+  defineGlobalModule("Erlang_Persistent_Term", Erlang_Persistent_Term);
+  defineGlobalModule("Erlang_Rand", Erlang_Rand);
+  defineGlobalModule("Erlang_Re", Erlang_Re);
+  defineGlobalModule("Erlang_Sets", Erlang_Sets);
+  defineGlobalModule("Erlang_Unicode", Erlang_Unicode);
+  defineGlobalModule("Erlang_Uri_String", Erlang_Uri_String);
+  defineGlobalModule("Elixir_Code", Elixir_Code);
+  defineGlobalModule("Elixir_Enum", defineElixirEnumModule());
 
-  globalThis.Elixir_Hologram_Router_Helpers =
-    defineElixirHologramRouterHelpersModule();
+  defineGlobalModule(
+    "Elixir_Hologram_Router_Helpers",
+    defineElixirHologramRouterHelpersModule(),
+  );
 
-  globalThis.Elixir_Kernel = Elixir_Kernel;
-  globalThis.Elixir_String_Chars = defineElixirStringCharsModule();
+  defineGlobalModule("Elixir_Kernel", Elixir_Kernel);
+  defineGlobalModule("Elixir_String_Chars", defineElixirStringCharsModule());
+}
+
+function defineGlobalModule(moduleJsName, moduleObj) {
+  globalThis[moduleJsName] = moduleObj;
+  moduleObj.__exports__ = new Set(Object.keys(moduleObj));
 }
 
 // Based on deepFreeze() from: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/freeze

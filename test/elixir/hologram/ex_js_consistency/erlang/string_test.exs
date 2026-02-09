@@ -9,6 +9,142 @@ defmodule Hologram.ExJsConsistency.Erlang.StringTest do
 
   @moduletag :consistency
 
+  describe "find/2" do
+    test "delegates to find/3 with :leading direction" do
+      assert :string.find("ab..cd..ef", "..") == :string.find("ab..cd..ef", "..", :leading)
+    end
+  end
+
+  describe "find/3" do
+    # Direction variations
+
+    test "with direction :leading finds first occurrence" do
+      assert :string.find("ab..cd..ef", "..", :leading) == "..cd..ef"
+    end
+
+    test "with direction :trailing finds last occurrence" do
+      assert :string.find("ab..cd..ef", "..", :trailing) == "..ef"
+    end
+
+    # Pattern not found
+
+    test "returns :nomatch with :leading direction" do
+      assert :string.find("ab..cd..ef", "x", :leading) == :nomatch
+    end
+
+    test "returns :nomatch with :trailing direction" do
+      assert :string.find("ab..cd..ef", "x", :trailing) == :nomatch
+    end
+
+    # Pattern position edge cases
+
+    test "when pattern is at the start of the string" do
+      assert :string.find("..abcd", "..", :leading) == "..abcd"
+    end
+
+    test "when pattern is at the end of the string" do
+      assert :string.find("abcd..", "..", :trailing) == ".."
+    end
+
+    test "with single character pattern" do
+      assert :string.find("ab..cd..ef", ".", :leading) == "..cd..ef"
+    end
+
+    # Input edge cases
+
+    test "with empty pattern returns string as-is" do
+      assert :string.find("Hello World", "", :leading) == "Hello World"
+    end
+
+    test "with empty string and empty pattern" do
+      assert :string.find("", "", :leading) == ""
+    end
+
+    test "with empty string and non-empty pattern" do
+      assert :string.find("", "x", :leading) == :nomatch
+    end
+
+    test "with unicode pattern" do
+      assert :string.find("Hello 👋 World 👋 End", "👋", :trailing) == "👋 End"
+    end
+
+    test "when pattern equals string" do
+      assert :string.find("abc", "abc", :leading) == "abc"
+    end
+
+    # Charlist input
+
+    test "with charlist string and charlist pattern" do
+      assert :string.find(~c"ab..cd..ef", ~c"..", :leading) == ~c"..cd..ef"
+    end
+
+    test "with charlist string and binary pattern" do
+      assert :string.find(~c"ab..cd..ef", "..", :trailing) == ~c"..ef"
+    end
+
+    test "with binary string and charlist pattern" do
+      assert :string.find("ab..cd..ef", ~c"..", :leading) == "..cd..ef"
+    end
+
+    test "returns :nomatch for charlist when pattern not found" do
+      assert :string.find(~c"ab..cd..ef", ~c"x", :leading) == :nomatch
+    end
+
+    test "with empty pattern returns charlist as-is" do
+      assert :string.find(~c"Hello World", ~c"", :leading) == ~c"Hello World"
+    end
+
+    # Error cases
+
+    test "raises MatchError if the first argument is not valid chardata" do
+      assert_error MatchError, build_match_error_msg(:abc), fn ->
+        :string.find(:abc, "_", :leading)
+      end
+    end
+
+    test "raises MatchError if the first argument is a non-binary bitstring" do
+      assert_error MatchError, build_match_error_msg(<<1::3>>), fn ->
+        :string.find(<<1::3>>, "x", :leading)
+      end
+    end
+
+    test "raises ArgumentError if the second argument is not valid chardata" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not valid character data (an iodata term)"),
+                   fn ->
+                     :string.find("Hello World", :abc, :leading)
+                   end
+    end
+
+    test "raises ArgumentError if the second argument is a non-binary bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not valid character data (an iodata term)"),
+                   fn ->
+                     :string.find("Hello World", <<1::3>>, :leading)
+                   end
+    end
+
+    test "raises FunctionClauseError if the third argument is not an atom" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":string.find/3", [
+                     "Hello World",
+                     " ",
+                     "leading"
+                   ]),
+                   fn ->
+                     :string.find("Hello World", " ", "leading")
+                   end
+    end
+
+    test "raises FunctionClauseError if the third argument is an unrecognized atom" do
+      assert_error FunctionClauseError,
+                   build_function_clause_error_msg(":string.find/3", ["Hello World", " ", :all]),
+                   fn ->
+                     :string.find("Hello World", " ", :all)
+                   end
+    end
+  end
+
   describe "join/2" do
     test "single element" do
       assert :string.join([~c"hello"], ~c", ") == ~c"hello"
@@ -71,6 +207,246 @@ defmodule Hologram.ExJsConsistency.Erlang.StringTest do
     test "raises ArgumentError for multiple elements with non-list separator" do
       assert_error ArgumentError, "argument error", fn ->
         :string.join([~c"hello", ~c"world"], :not_a_list)
+      end
+    end
+  end
+
+  describe "replace/3" do
+    test "delegates to replace/4 with :leading direction" do
+      # Use a string with multiple occurrences of the pattern to verify :leading (not :all or :trailing)
+      result = :string.replace("a-b-c", "-", "_")
+
+      assert result == ["a", "_", "b-c"]
+      assert result == :string.replace("a-b-c", "-", "_", :leading)
+    end
+  end
+
+  describe "replace/4" do
+    # Direction variations
+
+    test "with direction :all" do
+      result = :string.replace("Hello World !", " ", "_", :all)
+
+      assert result == ["Hello", "_", "World", "_", "!"]
+    end
+
+    test "with direction :leading" do
+      result = :string.replace("Hello World !", " ", "_", :leading)
+
+      assert result == ["Hello", "_", "World !"]
+    end
+
+    test "with direction :trailing" do
+      result = :string.replace("Hello World !", " ", "_", :trailing)
+
+      assert result == ["Hello World", "_", "!"]
+    end
+
+    # Pattern position edge cases
+
+    test "when pattern is at the start of the string" do
+      result = :string.replace("Hello", "He", "A", :leading)
+
+      assert result == ["", "A", "llo"]
+    end
+
+    test "when pattern is at the end of the string" do
+      result = :string.replace("Hello", "lo", "p", :trailing)
+
+      assert result == ["Hel", "p", ""]
+    end
+
+    test "with consecutive patterns" do
+      result = :string.replace("lololo", "lo", "ha", :all)
+
+      assert result == ["", "ha", "", "ha", "", "ha", ""]
+    end
+
+    # Input edge cases
+
+    test "with empty pattern" do
+      result = :string.replace("Hello World !", "", "_", :all)
+
+      assert result == ["Hello World !"]
+    end
+
+    test "when pattern is not found" do
+      result = :string.replace("Hello World !", ".", "_", :all)
+
+      assert result == ["Hello World !"]
+    end
+
+    test "with empty replacement" do
+      result = :string.replace("Hello World", " ", "", :all)
+
+      assert result == ["Hello", "", "World"]
+    end
+
+    test "with unicode pattern" do
+      result = :string.replace("Hello 👋 World", "👋", "🌍", :all)
+
+      assert result == ["Hello ", "🌍", " World"]
+    end
+
+    # Replacement type variations
+
+    test "accepts atom as replacement and inserts it as-is" do
+      result = :string.replace("Hello World !", " ", :_, :all)
+
+      assert result == ["Hello", :_, "World", :_, "!"]
+    end
+
+    test "accepts charlist as replacement and inserts it as-is" do
+      result = :string.replace("Hello World !", " ", ~c"_", :all)
+
+      assert result == ["Hello", ~c"_", "World", ~c"_", "!"]
+    end
+
+    # Error cases
+
+    test "raises MatchError if the first argument is not valid chardata" do
+      assert_error MatchError, build_match_error_msg(:hello_world), fn ->
+        :string.replace(:hello_world, "_", " ", :all)
+      end
+    end
+
+    test "raises ArgumentError if the second argument is not valid chardata" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not valid character data (an iodata term)"),
+                   fn ->
+                     :string.replace("Hello_World_!", :_, " ", :all)
+                   end
+    end
+
+    test "raises CaseClauseError if the fourth argument is not an atom" do
+      assert_error CaseClauseError, "no case clause matching: \"all\"", fn ->
+        :string.replace("Hello World !", " ", "_", "all")
+      end
+    end
+
+    test "raises CaseClauseError if the fourth argument is an unrecognized atom" do
+      assert_error CaseClauseError, "no case clause matching: :invalid", fn ->
+        :string.replace("Hello World", " ", "_", :invalid)
+      end
+    end
+  end
+
+  describe "split/2" do
+    test "delegates to split/3 with :leading direction" do
+      assert :string.split("a-b-c", "-") == :string.split("a-b-c", "-", :leading)
+    end
+  end
+
+  describe "split/3" do
+    test "with empty pattern" do
+      result = :string.split("Hello World !", "", :all)
+
+      assert result == ["Hello World !"]
+    end
+
+    test "with pattern not found in subject" do
+      result = :string.split("Hello World !", ".", :all)
+
+      assert result == ["Hello World !"]
+    end
+
+    test "with direction :all" do
+      result = :string.split("Hello World !", " ", :all)
+
+      assert result == ["Hello", "World", "!"]
+    end
+
+    test "with direction :leading" do
+      result = :string.split("Hello World !", " ", :leading)
+
+      assert result == ["Hello", "World !"]
+    end
+
+    test "with direction :trailing" do
+      result = :string.split("Hello World !", " ", :trailing)
+
+      assert result == ["Hello World", "!"]
+    end
+
+    test "with pattern at the start of the subject" do
+      result = :string.split("Hello World !", "H", :leading)
+
+      assert result == ["", "ello World !"]
+    end
+
+    test "with pattern at the end of the subject" do
+      result = :string.split("Hello World !", "!", :trailing)
+
+      assert result == ["Hello World ", ""]
+    end
+
+    test "with consecutive pattern" do
+      result = :string.split("Hello World !", "l", :all)
+
+      assert result == ["He", "", "o Wor", "d !"]
+    end
+
+    test "with unicode pattern" do
+      result = :string.split("Hello 👋 World", "👋", :all)
+
+      assert result == ["Hello ", " World"]
+    end
+
+    test "with charlist subject and charlist pattern" do
+      result = :string.split(~c"Hello World", ~c" ", :all)
+
+      assert result == [~c"Hello", ~c"World"]
+    end
+
+    test "with charlist subject and binary pattern" do
+      result = :string.split(~c"Hello World", " ", :all)
+
+      assert result == [~c"Hello", ~c"World"]
+    end
+
+    test "with binary subject and charlist pattern" do
+      result = :string.split("Hello World", ~c" ", :all)
+
+      assert result == ["Hello", "World"]
+    end
+
+    test "raises MatchError if the first argument is not valid chardata" do
+      assert_error MatchError, build_match_error_msg(:hello_world), fn ->
+        :string.split(:hello_world, "_", :all)
+      end
+    end
+
+    test "raises MatchError if the first argument is a non-binary bitstring" do
+      assert_error MatchError, build_match_error_msg(<<1::3>>), fn ->
+        :string.split(<<1::3>>, " ", :all)
+      end
+    end
+
+    test "raises ArgumentError if the second argument is not valid chardata" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not valid character data (an iodata term)"),
+                   fn ->
+                     :string.split("Hello_World_!", :_, :all)
+                   end
+    end
+
+    test "raises ArgumentError if the second argument is a non-binary bitstring" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not valid character data (an iodata term)"),
+                   fn ->
+                     :string.split("Hello World", <<1::3>>, :all)
+                   end
+    end
+
+    test "raises CaseClauseError if the third argument is not an atom" do
+      assert_error CaseClauseError, "no case clause matching: \"all\"", fn ->
+        :string.split("Hello World !", " ", "all")
+      end
+    end
+
+    test "raises CaseClauseError if the third argument is an unrecognized atom" do
+      assert_error CaseClauseError, "no case clause matching: :invalid", fn ->
+        :string.split("hello world", " ", :invalid)
       end
     end
   end

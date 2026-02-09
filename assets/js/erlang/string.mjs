@@ -1,6 +1,7 @@
 "use strict";
 
 import Bitstring from "../bitstring.mjs";
+import Erlang_Unicode from "./unicode.mjs";
 import Erlang_UnicodeUtil from "./unicode_util.mjs";
 import Interpreter from "../interpreter.mjs";
 import Type from "../type.mjs";
@@ -10,6 +11,89 @@ import Type from "../type.mjs";
 // Also, in such case add respective call graph edges in Hologram.CallGraph.list_runtime_mfas/1.
 
 const Erlang_String = {
+  // Start find/2
+  "find/2": (string, searchPattern) => {
+    return Erlang_String["find/3"](string, searchPattern, Type.atom("leading"));
+  },
+  // End find/2
+  // Deps: [:string.find/3]
+
+  // Start find/3
+  "find/3": (string, searchPattern, direction) => {
+    let stringBinary;
+
+    try {
+      stringBinary = Erlang_Unicode["characters_to_binary/1"](string);
+    } catch {
+      Interpreter.raiseMatchError(Interpreter.buildMatchErrorMsg(string));
+    }
+
+    if (Type.isTuple(stringBinary)) {
+      Interpreter.raiseMatchError(Interpreter.buildMatchErrorMsg(string));
+    }
+
+    const patternBinary =
+      Erlang_Unicode["characters_to_binary/1"](searchPattern);
+
+    if (Type.isTuple(patternBinary)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not valid character data (an iodata term)",
+        ),
+      );
+    }
+
+    if (!Type.isAtom(direction)) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":string.find/3", [
+          string,
+          searchPattern,
+          direction,
+        ]),
+      );
+    }
+
+    const directionValue = direction.value;
+
+    if (!["leading", "trailing"].includes(directionValue)) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":string.find/3", [
+          string,
+          searchPattern,
+          direction,
+        ]),
+      );
+    }
+
+    const stringText = Bitstring.toText(stringBinary);
+    const patternText = Bitstring.toText(patternBinary);
+
+    // Empty pattern returns the string as-is
+    if (Bitstring.isEmpty(patternBinary)) {
+      return Type.isList(string)
+        ? Type.charlist(stringText)
+        : Type.bitstring(stringText);
+    }
+
+    // Find the pattern
+    const index =
+      directionValue === "trailing"
+        ? stringText.lastIndexOf(patternText)
+        : stringText.indexOf(patternText);
+
+    if (index === -1) {
+      return Type.atom("nomatch");
+    }
+
+    // Return the remainder from the match position (inclusive of pattern)
+    const result = stringText.slice(index);
+
+    return Type.isList(string) ? Type.charlist(result) : Type.bitstring(result);
+  },
+  // End find/3
+  // Deps: [:unicode.characters_to_binary/1]
+
   // Start join/2
   "join/2": function (list, separator) {
     if (!Type.isList(list)) {
@@ -74,6 +158,156 @@ const Erlang_String = {
   },
   // End join/2
   // Deps: []
+
+  // Start replace/3
+  "replace/3": (string, pattern, replacement) => {
+    return Erlang_String["replace/4"](
+      string,
+      pattern,
+      replacement,
+      Type.atom("leading"),
+    );
+  },
+  // End replace/3
+  // Deps: [:string.replace/4]
+
+  // Start replace/4
+  "replace/4": (string, pattern, replacement, direction) => {
+    let stringBinary;
+
+    // Convert string to binary - re-throw as MatchError (Erlang raises MatchError for invalid string)
+    try {
+      stringBinary = Erlang_Unicode["characters_to_binary/1"](string);
+    } catch {
+      Interpreter.raiseMatchError(Interpreter.buildMatchErrorMsg(string));
+    }
+
+    // Convert pattern to binary - let ArgumentError propagate naturally
+    const patternBinary = Erlang_Unicode["characters_to_binary/1"](pattern);
+
+    if (!Type.isAtom(direction)) {
+      Interpreter.raiseCaseClauseError(direction);
+    }
+
+    const stringText = Bitstring.toText(stringBinary);
+    const patternText = Bitstring.toText(patternBinary);
+
+    if (Bitstring.isEmpty(patternBinary) || !stringText.includes(patternText)) {
+      return Type.list([Type.bitstring(stringText)]);
+    }
+
+    let resultList, index;
+
+    switch (direction.value) {
+      case "all":
+        resultList = stringText.split(patternText).flatMap((elem, idx) => {
+          return idx === 0
+            ? [Type.bitstring(elem)]
+            : [replacement, Type.bitstring(elem)];
+        });
+        break;
+
+      case "trailing":
+        index = stringText.lastIndexOf(patternText);
+        resultList = [
+          Type.bitstring(stringText.slice(0, index)),
+          replacement,
+          Type.bitstring(stringText.slice(index + patternText.length)),
+        ];
+        break;
+
+      case "leading":
+        index = stringText.indexOf(patternText);
+        resultList = [
+          Type.bitstring(stringText.slice(0, index)),
+          replacement,
+          Type.bitstring(stringText.slice(index + patternText.length)),
+        ];
+        break;
+
+      default:
+        Interpreter.raiseCaseClauseError(direction);
+    }
+
+    return Type.list(resultList);
+  },
+  // End replace/4
+  // Deps: [:unicode.characters_to_binary/1]
+
+  // Start split/2
+  "split/2": (subject, pattern) => {
+    return Erlang_String["split/3"](subject, pattern, Type.atom("leading"));
+  },
+  // End split/2
+  // Deps: [:string.split/3]
+
+  // Start split/3
+  "split/3": (subject, pattern, direction) => {
+    let subjectBinary;
+    try {
+      subjectBinary = Erlang_Unicode["characters_to_binary/1"](subject);
+    } catch {
+      Interpreter.raiseMatchError(Interpreter.buildMatchErrorMsg(subject));
+    }
+
+    if (Type.isTuple(subjectBinary)) {
+      Interpreter.raiseMatchError(Interpreter.buildMatchErrorMsg(subject));
+    }
+
+    const patternBinary = Erlang_Unicode["characters_to_binary/1"](pattern);
+
+    if (Type.isTuple(patternBinary)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not valid character data (an iodata term)",
+        ),
+      );
+    }
+
+    if (!Type.isAtom(direction)) {
+      Interpreter.raiseCaseClauseError(direction);
+    }
+
+    const directionValue = direction.value;
+
+    if (!["all", "leading", "trailing"].includes(directionValue)) {
+      Interpreter.raiseCaseClauseError(direction);
+    }
+
+    const subjectText = Bitstring.toText(subjectBinary);
+    const patternText = Bitstring.toText(patternBinary);
+
+    const convertResult = (str) =>
+      Type.isList(subject) ? Type.charlist(str) : str;
+
+    if (
+      Bitstring.isEmpty(patternBinary) ||
+      !subjectText.includes(patternText)
+    ) {
+      return Type.list([convertResult(subjectText)]);
+    }
+
+    let parts;
+
+    if (directionValue === "all") {
+      parts = subjectText.split(patternText);
+    } else {
+      const index =
+        directionValue === "trailing"
+          ? subjectText.lastIndexOf(patternText)
+          : subjectText.indexOf(patternText);
+
+      parts = [
+        subjectText.slice(0, index),
+        subjectText.slice(index + patternText.length),
+      ];
+    }
+
+    return Type.list(parts.map(convertResult));
+  },
+  // End split/3
+  // Deps: [:unicode.characters_to_binary/1]
 
   // Start titlecase/1
   "titlecase/1": (subject) => {

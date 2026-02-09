@@ -79,6 +79,7 @@ describe("Erlang_UnicodeUtil", () => {
       it("returns error tuple for surrogate pair", () => {
         // Create invalid UTF-8 with surrogate pair codepoint
         const input = Bitstring.fromBytes([0xed, 0xa0, 0x80]);
+
         const result = cp(input);
 
         assert.deepStrictEqual(result, Type.tuple([Type.atom("error"), input]));
@@ -132,6 +133,7 @@ describe("Erlang_UnicodeUtil", () => {
       it("does not validate surrogate pair codepoint in list", () => {
         // Erlang does not validate surrogate pairs in integer lists
         const input = Type.list([Type.integer(55296)]);
+
         const result = cp(input);
 
         assert.deepStrictEqual(result, Type.list([Type.integer(55296)]));
@@ -175,7 +177,6 @@ describe("Erlang_UnicodeUtil", () => {
 
       it("extracts codepoint from multi-character binary", () => {
         const input = Type.list([Type.bitstring("hello"), Type.integer(97)]);
-
         const result = cp(input);
 
         assert.deepStrictEqual(
@@ -300,6 +301,444 @@ describe("Erlang_UnicodeUtil", () => {
       });
     });
 
+    describe("with improper lists", () => {
+      it("handles improper list with integer tail", () => {
+        const input = Type.improperList([Type.integer(97), Type.integer(98)]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, input);
+      });
+
+      it("handles improper list with binary tail", () => {
+        const input = Type.improperList([
+          Type.integer(97),
+          Type.bitstring("bc"),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, input);
+      });
+
+      it("handles improper list with binary head and tail", () => {
+        const input = Type.improperList([
+          Type.bitstring("ab"),
+          Type.bitstring("cd"),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([
+            Type.integer(97),
+            Type.bitstring("b"),
+            Type.bitstring("cd"),
+          ]),
+        );
+      });
+
+      it("handles improper list with binary and empty list tail", () => {
+        const input = Type.improperList([Type.bitstring("ab"), Type.list()]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([Type.integer(97), Type.bitstring("b")]),
+        );
+      });
+
+      it("handles improper list with empty binary and empty list tail", () => {
+        const input = Type.improperList([Type.bitstring(""), Type.list()]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, Type.list());
+      });
+
+      it("handles improper list with empty lists", () => {
+        const input = Type.improperList([Type.list(), Type.list()]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, Type.list());
+      });
+
+      it("passes through improper list with atom tail", () => {
+        const input = Type.improperList([Type.integer(97), Type.atom("atom")]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, input);
+      });
+
+      it("passes through improper list with float tail", () => {
+        const input = Type.improperList([Type.integer(97), Type.float(3.14)]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, input);
+      });
+
+      it("passes through improper list with non-byte-aligned bitstring tail", () => {
+        const bitstring = Type.bitstring([1, 0, 1]);
+        const input = Type.improperList([Type.integer(97), bitstring]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, input);
+      });
+
+      it("passes through improper list with invalid UTF-8 binary tail", () => {
+        const invalidBinary = Bitstring.fromBytes([255, 255]);
+        const input = Type.improperList([Type.integer(97), invalidBinary]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, input);
+      });
+
+      it("handles nested improper list with integers", () => {
+        const input = Type.list([
+          Type.improperList([Type.integer(97), Type.integer(98)]),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([Type.integer(97), Type.integer(98)]),
+        );
+      });
+
+      it("passes through nested improper list with atom tail", () => {
+        const input = Type.list([
+          Type.improperList([Type.integer(97), Type.atom("atom")]),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([Type.integer(97), Type.atom("atom")]),
+        );
+      });
+
+      it("handles nested improper list with binary and empty list tail", () => {
+        const input = Type.list([
+          Type.improperList([Type.bitstring("ab"), Type.list()]),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([Type.integer(97), Type.bitstring("b")]),
+        );
+      });
+
+      it("handles improper list with nested valid codepoint and binary tail", () => {
+        const input = Type.improperList([
+          Type.list([Type.integer(97), Type.integer(98)]),
+          Type.bitstring("cd"),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([
+            Type.integer(97),
+            Type.integer(98),
+            Type.bitstring("cd"),
+          ]),
+        );
+      });
+
+      it("raises FunctionClauseError for nested improper list with empty list and integer tail", () => {
+        const input = Type.list([
+          Type.improperList([Type.list(), Type.integer(97)]),
+        ]);
+
+        assertBoxedError(
+          () => cp(input),
+          "FunctionClauseError",
+          Interpreter.buildFunctionClauseErrorMsg(":unicode_util.cp/1", [
+            Type.integer(97),
+          ]),
+        );
+      });
+
+      it("raises FunctionClauseError for nested improper list with empty binary and integer tail", () => {
+        const input = Type.list([
+          Type.improperList([Type.bitstring(""), Type.integer(97)]),
+        ]);
+
+        assertBoxedError(
+          () => cp(input),
+          "FunctionClauseError",
+          Interpreter.buildFunctionClauseErrorMsg(":unicode_util.cp/1", [
+            Type.integer(97),
+          ]),
+        );
+      });
+    });
+
+    describe("with mixed content", () => {
+      it("handles multiple binaries in list", () => {
+        const input = Type.list([
+          Type.bitstring("ab"),
+          Type.bitstring("cd"),
+          Type.integer(97),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.integer(97),
+            Type.bitstring("b"),
+            Type.bitstring("cd"),
+            Type.integer(97),
+          ]),
+        );
+      });
+
+      it("handles consecutive non-empty binaries in list", () => {
+        const input = Type.list([
+          Type.bitstring("ab"),
+          Type.bitstring("cd"),
+          Type.bitstring("ef"),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.integer(97),
+            Type.bitstring("b"),
+            Type.bitstring("cd"),
+            Type.bitstring("ef"),
+          ]),
+        );
+      });
+
+      it("handles list with alternating integers and binaries", () => {
+        const input = Type.list([
+          Type.integer(97),
+          Type.bitstring("b"),
+          Type.integer(99),
+          Type.bitstring("d"),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.integer(97),
+            Type.bitstring("b"),
+            Type.integer(99),
+            Type.bitstring("d"),
+          ]),
+        );
+      });
+
+      it("does not error on invalid UTF-8 after valid integer", () => {
+        const invalidBinary = Bitstring.fromBytes([255, 255]);
+        const input = Type.list([Type.integer(97), invalidBinary]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([Type.integer(97), invalidBinary]),
+        );
+      });
+
+      // Tests O(n) optimization: avoids O(n²) slicing behavior when processing long lists
+      it("handles very long list of integers", () => {
+        const longList = Array.from({length: 100}, (_elem, index) =>
+          Type.integer(index + 1),
+        );
+
+        const input = Type.list(longList);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, input);
+        assert.strictEqual(result.data.length, 100);
+      });
+
+      it("handles nested then flat integers", () => {
+        const input = Type.list([
+          Type.list([Type.integer(97), Type.integer(98)]),
+          Type.integer(99),
+          Type.integer(100),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.integer(97),
+            Type.integer(98),
+            Type.integer(99),
+            Type.integer(100),
+          ]),
+        );
+      });
+
+      it("handles very deeply nested lists", () => {
+        const input = Type.list([
+          Type.list([Type.list([Type.list([Type.integer(97)])])]),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(97)]));
+      });
+
+      it("handles multiple nested empty binaries with following integer", () => {
+        const input = Type.list([
+          Type.list([Type.bitstring("")]),
+          Type.list([Type.bitstring("")]),
+          Type.integer(97),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(97)]));
+      });
+
+      it("handles nested empty binary and empty list with following integer", () => {
+        const input = Type.list([
+          Type.list([Type.bitstring(""), Type.list()]),
+          Type.integer(97),
+        ]);
+
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(97)]));
+      });
+
+      it("handles empty nested list followed by valid nested list", () => {
+        const input = Type.list([Type.list(), Type.list([Type.integer(97)])]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(97)]));
+      });
+
+      it("handles list with only empty nested lists", () => {
+        const input = Type.list([Type.list(), Type.list(), Type.list()]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, Type.list());
+      });
+    });
+
+    describe("UTF-8 and encoding edge cases", () => {
+      it("handles codepoint at 0 (null character)", () => {
+        const input = Type.list([Type.integer(0)]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(0)]));
+      });
+
+      it("handles binary containing null character", () => {
+        const input = Bitstring.fromBytes([0, 97, 98]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([Type.integer(0), Type.bitstring("ab")]),
+        );
+      });
+
+      it("handles BMP boundary - maximum BMP codepoint", () => {
+        const input = Type.list([Type.integer(0xffff)]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(0xffff)]));
+      });
+
+      it("handles first codepoint above BMP", () => {
+        const input = Type.list([Type.integer(0x10000)]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(0x10000)]));
+      });
+
+      it("handles UTF-8 two-byte character (¢)", () => {
+        const input = Bitstring.fromBytes([0xc2, 0xa2, 99]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([Type.integer(162), Type.bitstring("c")]),
+        );
+      });
+
+      it("handles UTF-8 three-byte character (€)", () => {
+        const input = Bitstring.fromBytes([0xe2, 0x82, 0xac]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([Type.integer(8364), Type.bitstring("")]),
+        );
+      });
+
+      it("returns error tuple for overlong UTF-8 encoding", () => {
+        const invalidBinary = Bitstring.fromBytes([0xc0, 0x80]);
+        const result = cp(invalidBinary);
+
+        assert.deepStrictEqual(
+          result,
+          Type.tuple([Type.atom("error"), invalidBinary]),
+        );
+      });
+
+      it("returns error tuple for lone continuation byte", () => {
+        const invalidBinary = Bitstring.fromBytes([0x80]);
+        const result = cp(invalidBinary);
+
+        assert.deepStrictEqual(
+          result,
+          Type.tuple([Type.atom("error"), invalidBinary]),
+        );
+      });
+
+      it("returns error tuple for invalid 5-byte UTF-8 sequence", () => {
+        const invalidBinary = Bitstring.fromBytes([
+          0xf8, 0x80, 0x80, 0x80, 0x80,
+        ]);
+
+        const result = cp(invalidBinary);
+
+        assert.deepStrictEqual(
+          result,
+          Type.tuple([Type.atom("error"), invalidBinary]),
+        );
+      });
+
+      it("returns error tuple for truncated UTF-8 sequence", () => {
+        const invalidBinary = Bitstring.fromBytes([0xc3]);
+        const result = cp(invalidBinary);
+
+        assert.deepStrictEqual(
+          result,
+          Type.tuple([Type.atom("error"), invalidBinary]),
+        );
+      });
+
+      it("returns error tuple for nested invalid UTF-8", () => {
+        const invalidBinary = Bitstring.fromBytes([255, 255]);
+        const input = Type.list([Type.list([invalidBinary])]);
+        const result = cp(input);
+
+        assert.deepStrictEqual(
+          result,
+          Type.tuple([Type.atom("error"), invalidBinary]),
+        );
+      });
+    });
+
     describe("error handling", () => {
       it("raises FunctionClauseError for integer input", () => {
         const input = Type.integer(42);
@@ -337,7 +776,7 @@ describe("Erlang_UnicodeUtil", () => {
         );
       });
 
-      it("raises FunctionClauseError for non-byte-aligned bitstring", () => {
+      it("raises FunctionClauseError for non-byte-aligned bitstring (direct)", () => {
         const bitstring = Type.bitstring([1, 0, 1]);
 
         assertBoxedError(
@@ -361,6 +800,19 @@ describe("Erlang_UnicodeUtil", () => {
         );
       });
 
+      it("raises FunctionClauseError for list with atom head and tail", () => {
+        const input = Type.list([Type.atom("a"), Type.atom("b")]);
+
+        assertBoxedError(
+          () => cp(input),
+          "FunctionClauseError",
+          Interpreter.buildFunctionClauseErrorMsg(":unicode_util.cpl/2", [
+            Type.atom("a"),
+            Type.list([Type.atom("b")]),
+          ]),
+        );
+      });
+
       it("raises FunctionClauseError for list with float", () => {
         const input = Type.list([Type.float(3.14)]);
 
@@ -369,6 +821,231 @@ describe("Erlang_UnicodeUtil", () => {
           "FunctionClauseError",
           Interpreter.buildFunctionClauseErrorMsg(":unicode_util.cp/1", [
             Type.float(3.14),
+          ]),
+        );
+      });
+    });
+  });
+
+  describe("gc/1", () => {
+    const gc = Erlang_UnicodeUtil["gc/1"];
+
+    describe("with binary input", () => {
+      it("returns empty list for empty binary", () => {
+        const result = gc(Type.bitstring(""));
+
+        assert.deepStrictEqual(result, Type.list());
+      });
+
+      it("extracts first grapheme from ascii string", () => {
+        const result = gc(Type.bitstring("ab"));
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([Type.integer(97), Type.bitstring("b")]),
+        );
+      });
+
+      it("handles grapheme with combining mark", () => {
+        const result = gc(Type.bitstring("e̊x"));
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([
+            Type.list([Type.integer(101), Type.integer(778)]),
+            Type.bitstring("x"),
+          ]),
+        );
+      });
+
+      it("returns error tuple for invalid UTF-8", () => {
+        const invalid = Bitstring.fromBytes([255, 255]);
+        const result = gc(invalid);
+
+        assert.deepStrictEqual(
+          result,
+          Type.tuple([Type.atom("error"), invalid]),
+        );
+      });
+
+      it("extracts single character binary", () => {
+        const result = gc(Type.bitstring("a"));
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([Type.integer(97), Type.bitstring("")]),
+        );
+      });
+
+      it("handles emoji outside BMP", () => {
+        const result = gc(Type.bitstring("😀x"));
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([Type.integer(128512), Type.bitstring("x")]),
+        );
+      });
+
+      it("handles flag emoji as single grapheme cluster", () => {
+        const result = gc(Type.bitstring("🇺🇸"));
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([
+            Type.list([Type.integer(0x1f1fa), Type.integer(0x1f1f8)]),
+            Type.bitstring(""),
+          ]),
+        );
+      });
+    });
+
+    describe("with list input", () => {
+      it("returns empty list for empty list", () => {
+        const result = gc(Type.list());
+
+        assert.deepStrictEqual(result, Type.list());
+      });
+
+      it("extracts single-codepoint cluster when next codepoint is non-combining", () => {
+        const result = gc(Type.list([Type.integer(97), Type.integer(98)]));
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([Type.integer(97), Type.integer(98)]),
+        );
+      });
+
+      it("groups combining marks across integers", () => {
+        const result = gc(
+          Type.list([Type.integer(97), Type.integer(778), Type.integer(120)]),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.list([Type.integer(97), Type.integer(778)]),
+            Type.integer(120),
+          ]),
+        );
+      });
+
+      it("handles list starting with binary", () => {
+        const result = gc(Type.list([Type.bitstring("ab"), Type.integer(98)]));
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([Type.integer(97), Type.bitstring("b"), Type.integer(98)]),
+        );
+      });
+
+      it("handles binary with combining marks inside list", () => {
+        const result = gc(Type.list([Type.bitstring("e̊"), Type.integer(120)]));
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([
+            Type.list([Type.integer(101), Type.integer(778)]),
+            Type.bitstring(""),
+            Type.integer(120),
+          ]),
+        );
+      });
+
+      it("handles integer followed by empty binary", () => {
+        const result = gc(Type.list([Type.integer(97), Type.bitstring("")]));
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([Type.integer(97), Type.bitstring("")]),
+        );
+      });
+
+      it("treats invalid UTF-8 tail binary as boundary", () => {
+        const invalid = Bitstring.fromBytes(new Uint8Array([255]));
+        const result = gc(Type.list([Type.integer(97), invalid]));
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([Type.integer(97), invalid]),
+        );
+      });
+
+      it("handles single integer list", () => {
+        const result = gc(Type.list([Type.integer(97)]));
+
+        assert.deepStrictEqual(result, Type.list([Type.integer(97)]));
+      });
+
+      it("handles list with nested list", () => {
+        const result = gc(
+          Type.list([Type.list([Type.integer(97)]), Type.integer(98)]),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.list([Type.integer(97), Type.integer(98)]),
+        );
+      });
+
+      it("handles improper list with integer and invalid UTF-8 binary tail", () => {
+        const invalid = Bitstring.fromBytes(new Uint8Array([255]));
+        const result = gc(Type.improperList([Type.integer(97), invalid]));
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([Type.integer(97), invalid]),
+        );
+      });
+
+      it("handles improper list [binary | binary] preserving all elements", () => {
+        const result = gc(
+          Type.improperList([Type.bitstring("ab"), Type.bitstring("cd")]),
+        );
+
+        assert.deepStrictEqual(
+          result,
+          Type.improperList([
+            Type.integer(97),
+            Type.bitstring("b"),
+            Type.bitstring("cd"),
+          ]),
+        );
+      });
+    });
+
+    describe("error handling", () => {
+      it("raises FunctionClauseError for non-byte-aligned bitstring", () => {
+        const bitstring = Type.bitstring([1, 0, 1]);
+
+        assertBoxedError(
+          () => gc(bitstring),
+          "FunctionClauseError",
+          Interpreter.buildFunctionClauseErrorMsg(":unicode_util.cp/1", [
+            bitstring,
+          ]),
+        );
+      });
+
+      it("raises FunctionClauseError for integer input", () => {
+        const input = Type.integer(42);
+
+        assertBoxedError(
+          () => gc(input),
+          "FunctionClauseError",
+          Interpreter.buildFunctionClauseErrorMsg(":unicode_util.cp/1", [
+            input,
+          ]),
+        );
+      });
+
+      it("raises FunctionClauseError for atom input", () => {
+        const input = Type.atom("test");
+
+        assertBoxedError(
+          () => gc(input),
+          "FunctionClauseError",
+          Interpreter.buildFunctionClauseErrorMsg(":unicode_util.cp/1", [
+            input,
           ]),
         );
       });

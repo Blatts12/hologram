@@ -8,6 +8,40 @@ import Type from "../type.mjs";
 // Also, in such case add respective call graph edges in Hologram.CallGraph.list_runtime_mfas/1.
 
 const Erlang_Lists = {
+  // Start all/2
+  "all/2": (fun, list) => {
+    if (!Type.isAnonymousFunction(fun) || fun.arity !== 1) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":lists.all/2", [fun, list]),
+      );
+    }
+
+    if (!Type.isList(list)) {
+      Interpreter.raiseCaseClauseError(list);
+    }
+
+    if (!Type.isProperList(list)) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":lists.all_1/2", [
+          fun,
+          list.data.at(-1),
+        ]),
+      );
+    }
+
+    for (let i = 0; i < list.data.length; i++) {
+      const res = Interpreter.callAnonymousFunction(fun, [list.data[i]]);
+
+      if (!Type.isTrue(res)) {
+        return Type.boolean(false);
+      }
+    }
+
+    return Type.boolean(true);
+  },
+  // End all/2
+  // Deps: []
+
   // Start any/2
   "any/2": (fun, list) => {
     if (!Type.isAnonymousFunction(fun) || fun.arity !== 1) {
@@ -36,6 +70,29 @@ const Erlang_Lists = {
     return Type.boolean(false);
   },
   // End any/2
+  // Deps: []
+
+  // Start duplicate/2
+  "duplicate/2": (n, elem) => {
+    if (!Type.isInteger(n) || n.value < 0n) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":lists.duplicate/2", [
+          n,
+          elem,
+        ]),
+      );
+    }
+
+    const count = Number(n.value);
+    const result = new Array(count);
+
+    for (let i = 0; i < count; i++) {
+      result[i] = elem;
+    }
+
+    return Type.list(result);
+  },
+  // End duplicate/2
   // Deps: []
 
   // Start filter/2
@@ -153,6 +210,25 @@ const Erlang_Lists = {
   // End flatten/1
   // Deps: []
 
+  // Start flatten/2
+  "flatten/2": (list, tail) => {
+    if (!Type.isList(list) || !Type.isProperList(list) || !Type.isList(tail)) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":lists.flatten/2", [
+          list,
+          tail,
+        ]),
+      );
+    }
+
+    const flattened = Erlang_Lists["flatten/1"](list);
+    const data = flattened.data.concat(Type.isList(tail) ? tail.data : [tail]);
+
+    return Type.isProperList(tail) ? Type.list(data) : Type.improperList(data);
+  },
+  // End flatten/2
+  // Deps: [:lists.flatten/1]
+
   // Start foldl/3
   "foldl/3": function (fun, initialAcc, list) {
     if (!Type.isAnonymousFunction(fun) || fun.arity !== 2) {
@@ -201,6 +277,33 @@ const Erlang_Lists = {
     );
   },
   // End foldr/3
+  // Deps: []
+
+  // Start foreach/2
+  "foreach/2": (fun, list) => {
+    if (!Type.isAnonymousFunction(fun) || fun.arity !== 1) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":lists.foreach/2", [
+          fun,
+          list,
+        ]),
+      );
+    }
+
+    if (!Type.isList(list) || !Type.isProperList(list)) {
+      // Client-side error message is intentionally simplified.
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":lists.foreach_1/2"),
+      );
+    }
+
+    for (let i = 0; i < list.data.length; i++) {
+      Interpreter.callAnonymousFunction(fun, [list.data[i]]);
+    }
+
+    return Type.atom("ok");
+  },
+  // End foreach/2
   // Deps: []
 
   // Start keydelete/3
@@ -399,6 +502,50 @@ const Erlang_Lists = {
   },
   // End keysort/2
   // Deps: [:erlang.element/2]
+
+  // Start keystore/4
+  "keystore/4": function (key, index, tuples, newTuple) {
+    if (!Type.isInteger(index) || index.value < 1n || !Type.isTuple(newTuple)) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":lists.keystore/4", arguments),
+      );
+    }
+
+    if (!Type.isProperList(tuples)) {
+      const thirdArg = Type.isList(tuples) ? tuples.data.at(-1) : tuples;
+
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":lists.keystore2/4", [
+          key,
+          index,
+          thirdArg,
+          newTuple,
+        ]),
+      );
+    }
+
+    for (let i = 0; i < tuples.data.length; i++) {
+      const tuple = tuples.data[i];
+
+      if (
+        Type.isTuple(tuple) &&
+        tuple.data.length >= index.value &&
+        Interpreter.isEqual(tuple.data[Number(index.value) - 1], key)
+      ) {
+        const resultData = [
+          ...tuples.data.slice(0, i),
+          newTuple,
+          ...tuples.data.slice(i + 1),
+        ];
+
+        return Type.list(resultData);
+      }
+    }
+
+    return Type.list([...tuples.data, newTuple]);
+  },
+  // End keystore/4
+  // Deps: []
 
   // Start keytake/3
   "keytake/3": function (key, index, tuples) {
@@ -711,6 +858,88 @@ const Erlang_Lists = {
     return Type.isProperList(tail) ? Type.list(data) : Type.improperList(data);
   },
   // End reverse/2
+  // Deps: []
+
+  // Start seq/2
+  "seq/2": (from, to) => {
+    if (
+      !Type.isInteger(from) ||
+      !Type.isInteger(to) ||
+      from.value > to.value + 1n
+    ) {
+      Interpreter.raiseFunctionClauseError(
+        Interpreter.buildFunctionClauseErrorMsg(":lists.seq/2", [from, to]),
+      );
+    }
+
+    return Erlang_Lists["seq/3"](from, to, Type.integer(1));
+  },
+  // End seq/2
+  // Deps: [:lists.seq/3]
+
+  // Start seq/3
+  "seq/3": (fromTerm, toTerm, incrTerm) => {
+    if (!Type.isInteger(fromTerm)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(1, "not an integer"),
+      );
+    }
+
+    if (!Type.isInteger(toTerm)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(2, "not an integer"),
+      );
+    }
+
+    if (!Type.isInteger(incrTerm)) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(3, "not an integer"),
+      );
+    }
+
+    const from = fromTerm.value;
+    const to = toTerm.value;
+    const incr = incrTerm.value;
+
+    // Special case: seq(same, same, 0) when is_integer(same) -> [same]
+    if (from === to && incr === 0n) {
+      return Type.list([Type.integer(from)]);
+    }
+
+    // Erlang guard conditions:
+    // (incr > 0 andalso from - incr =< to) orelse (incr < 0 andalso from - incr >= to)
+    // Negating this (to find error cases):
+    // incr > 0 andalso from - incr > to  (i.e., to < from - incr when incr > 0)
+    // incr < 0 andalso from - incr < to  (i.e., to > from - incr when incr < 0)
+    // incr === 0 (special case already handled above when from === to)
+
+    if (incr > 0n && to < from - incr) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(3, "not a negative increment"),
+      );
+    }
+
+    if ((incr < 0n && to > from - incr) || incr === 0n) {
+      Interpreter.raiseArgumentError(
+        Interpreter.buildArgumentErrorMsg(3, "not a positive increment"),
+      );
+    }
+
+    const result = [];
+
+    if (incr > 0n) {
+      for (let i = from; i <= to; i += incr) {
+        result.push(Type.integer(i));
+      }
+    } else {
+      for (let i = from; i >= to; i += incr) {
+        result.push(Type.integer(i));
+      }
+    }
+
+    return Type.list(result);
+  },
+  // End seq/3
   // Deps: []
 
   // Start sort/1

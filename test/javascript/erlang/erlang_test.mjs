@@ -14,6 +14,7 @@ import {defineModule1Fixture as defineErlangModule1Fixture} from "../support/fix
 
 import Bitstring from "../../../assets/js/bitstring.mjs";
 import Erlang from "../../../assets/js/erlang/erlang.mjs";
+import Erlang_Os from "../../../assets/js/erlang/os.mjs";
 import ERTS from "../../../assets/js/erts.mjs";
 import HologramInterpreterError from "../../../assets/js/errors/interpreter_error.mjs";
 import Interpreter from "../../../assets/js/interpreter.mjs";
@@ -1474,6 +1475,48 @@ describe("Erlang", () => {
     });
   });
 
+  describe("append_element/2", () => {
+    const append_element = Erlang["append_element/2"];
+
+    it("appends an element to an empty tuple", () => {
+      const result = append_element(Type.tuple(), Type.integer(1));
+
+      assert.deepStrictEqual(result, Type.tuple([Type.integer(1)]));
+    });
+
+    it("appends an element to a single-element tuple", () => {
+      const result = append_element(
+        Type.tuple([Type.integer(1)]),
+        Type.integer(2),
+      );
+
+      assert.deepStrictEqual(
+        result,
+        Type.tuple([Type.integer(1), Type.integer(2)]),
+      );
+    });
+
+    it("appends an element to a tuple with multiple elements", () => {
+      const result = append_element(
+        Type.tuple([Type.atom("one"), Type.atom("two")]),
+        Type.atom("three"),
+      );
+
+      assert.deepStrictEqual(
+        result,
+        Type.tuple([Type.atom("one"), Type.atom("two"), Type.atom("three")]),
+      );
+    });
+
+    it("raises ArgumentError if the first argument is not a tuple", () => {
+      assertBoxedError(
+        () => append_element(Type.atom("abc"), Type.integer(1)),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a tuple"),
+      );
+    });
+  });
+
   describe("apply/2", () => {
     const apply = Erlang["apply/2"];
 
@@ -2780,6 +2823,53 @@ describe("Erlang", () => {
     });
   });
 
+  describe("bnot/1", () => {
+    const testedFun = Erlang["bnot/1"];
+
+    it("positive integer", () => {
+      // 2 = 0b00000010, -3 = 0b11111101
+      const result = testedFun(integer2);
+
+      assert.deepStrictEqual(result, Type.integer(-3));
+    });
+
+    it("zero", () => {
+      // 0 = 0b00000000, -1 = 0b11111111
+      const result = testedFun(integer0);
+
+      assert.deepStrictEqual(result, Type.integer(-1));
+    });
+
+    it("negative integer", () => {
+      // -3 = 0b11111101, 2 = 0b00000010
+      const result = testedFun(Type.integer(-3));
+
+      assert.deepStrictEqual(result, integer2);
+    });
+
+    it("argument above JS Number.MAX_SAFE_INTEGER", () => {
+      // Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      const result = testedFun(Type.integer(9_007_199_254_740_992n));
+
+      assert.deepStrictEqual(result, Type.integer(-9_007_199_254_740_993n));
+    });
+
+    it("argument below JS Number.MIN_SAFE_INTEGER", () => {
+      // Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      const result = testedFun(Type.integer(-9_007_199_254_740_992n));
+
+      assert.deepStrictEqual(result, Type.integer(9_007_199_254_740_991n));
+    });
+
+    it("raises ArithmeticError if the argument is not an integer", () => {
+      assertBoxedError(
+        () => testedFun(float2),
+        "ArithmeticError",
+        "bad argument in arithmetic expression: Bitwise.bnot(2.0)",
+      );
+    });
+  });
+
   describe("bor/2", () => {
     const bor = Erlang["bor/2"];
 
@@ -2878,6 +2968,94 @@ describe("Erlang", () => {
         () => bor(integer1, float2),
         "ArithmeticError",
         "bad argument in arithmetic expression: Bitwise.bor(1, 2.0)",
+      );
+    });
+  });
+
+  describe("bsl/2", () => {
+    const testedFun = Erlang["bsl/2"];
+
+    it("common usage", () => {
+      // 1 = 0b00000001, 16 = 0b00010000
+      assert.deepStrictEqual(
+        testedFun(Type.integer(1), Type.integer(4)),
+        Type.integer(16),
+      );
+    });
+
+    it("zero shift", () => {
+      // 247 = 0b11110111
+      assert.deepStrictEqual(
+        testedFun(Type.integer(247), Type.integer(0)),
+        Type.integer(247),
+      );
+    });
+
+    it("shift right via negative shift", () => {
+      // 16 = 0b00010000, 8 = 0b00001000
+      assert.deepStrictEqual(
+        testedFun(Type.integer(16), Type.integer(-1)),
+        Type.integer(8),
+      );
+    });
+
+    it("negative integer left shift", () => {
+      // -2 = 0b11111110, -4 = 0b11111100
+      assert.deepStrictEqual(
+        testedFun(Type.integer(-2), Type.integer(1)),
+        Type.integer(-4),
+      );
+    });
+
+    it("large shift for positive integer", () => {
+      // 1 << 64 = 18_446_744_073_709_551_616
+      assert.deepStrictEqual(
+        testedFun(Type.integer(1), Type.integer(64)),
+        Type.integer(18_446_744_073_709_551_616n),
+      );
+    });
+
+    it("large shift for negative integer", () => {
+      // -1 << 64 = -18_446_744_073_709_551_616
+      assert.deepStrictEqual(
+        testedFun(Type.integer(-1), Type.integer(64)),
+        Type.integer(-18_446_744_073_709_551_616n),
+      );
+    });
+
+    it("above JS Number.MAX_SAFE_INTEGER", () => {
+      // Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      //  9_007_199_254_740_992 = 0b100000000000000000000000000000000000000000000000000000
+      // 18_014_398_509_481_984 = 0b1000000000000000000000000000000000000000000000000000000
+      assert.deepStrictEqual(
+        testedFun(Type.integer(9_007_199_254_740_992n), Type.integer(1)),
+        Type.integer(18_014_398_509_481_984n),
+      );
+    });
+
+    it("below JS Number.MIN_SAFE_INTEGER", () => {
+      // Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      //  -9_007_199_254_740_992 = 0b1111111111100000000000000000000000000000000000000000000000000000
+      // -18_014_398_509_481_984 = 0b1111111111000000000000000000000000000000000000000000000000000000
+      assert.deepStrictEqual(
+        testedFun(Type.integer(-9_007_199_254_740_992n), Type.integer(1)),
+        Type.integer(-18_014_398_509_481_984n),
+      );
+    });
+
+    it("raises ArithmeticError if the first argument is not an integer", () => {
+      assertBoxedError(
+        () => testedFun(Type.float(1.0), Type.integer(2)),
+        "ArithmeticError",
+        "bad argument in arithmetic expression: Bitwise.bsl(1.0, 2)",
+      );
+    });
+
+    it("raises ArithmeticError if the second argument is not an integer", () => {
+      assertBoxedError(
+        () => testedFun(Type.integer(1), Type.float(2.0)),
+        "ArithmeticError",
+        "bad argument in arithmetic expression: Bitwise.bsl(1, 2.0)",
       );
     });
   });
@@ -3182,6 +3360,341 @@ describe("Erlang", () => {
         () => testedFun(Type.atom("abc")),
         "ArgumentError",
         Interpreter.buildArgumentErrorMsg(1, "not a number"),
+      );
+    });
+  });
+
+  describe("convert_time_unit/3", () => {
+    const testedFun = Erlang["convert_time_unit/3"];
+
+    it("converts seconds to milliseconds", () => {
+      const result = testedFun(
+        Type.integer(2),
+        Type.atom("second"),
+        Type.atom("millisecond"),
+      );
+
+      assert.deepStrictEqual(result, Type.integer(2000));
+    });
+
+    it("converts milliseconds to seconds using floor rounding", () => {
+      const result = testedFun(
+        Type.integer(1500),
+        Type.atom("millisecond"),
+        Type.atom("second"),
+      );
+
+      assert.deepStrictEqual(result, Type.integer(1));
+    });
+
+    it("converts negative values using floor rounding", () => {
+      const result = testedFun(
+        Type.integer(-1500),
+        Type.atom("millisecond"),
+        Type.atom("second"),
+      );
+
+      assert.deepStrictEqual(result, Type.integer(-2));
+    });
+
+    it("supports deprecated symbolic time units", () => {
+      const result = testedFun(
+        Type.integer(1),
+        Type.atom("seconds"),
+        Type.atom("milli_seconds"),
+      );
+
+      assert.deepStrictEqual(result, Type.integer(1000));
+    });
+
+    it("supports integer time units", () => {
+      const result = testedFun(
+        Type.integer(3),
+        Type.integer(1),
+        Type.integer(1000),
+      );
+
+      assert.deepStrictEqual(result, Type.integer(3000));
+    });
+
+    it("converts zero time", () => {
+      const result = testedFun(
+        integer0,
+        Type.atom("second"),
+        Type.atom("millisecond"),
+      );
+
+      assert.deepStrictEqual(result, integer0);
+    });
+
+    it("handles same unit conversion (identity)", () => {
+      const result = testedFun(
+        Type.integer(42),
+        Type.atom("millisecond"),
+        Type.atom("millisecond"),
+      );
+
+      assert.deepStrictEqual(result, Type.integer(42));
+    });
+
+    it("handles same unit conversion with negative value (identity)", () => {
+      const result = testedFun(
+        Type.integer(-42),
+        Type.atom("millisecond"),
+        Type.atom("millisecond"),
+      );
+
+      assert.deepStrictEqual(result, Type.integer(-42));
+    });
+
+    it("supports native time unit", () => {
+      const result = testedFun(
+        Type.integer(1),
+        Type.atom("second"),
+        Type.atom("native"),
+      );
+
+      assert.deepStrictEqual(result, Type.integer(1_000_000_000));
+    });
+
+    it("supports perf_counter time unit", () => {
+      const result = testedFun(
+        Type.integer(2_000_000),
+        Type.atom("perf_counter"),
+        Type.atom("millisecond"),
+      );
+
+      // 2_000_000 perf_counter units (nanoseconds) = 2 milliseconds
+      assert.deepStrictEqual(result, Type.integer(2));
+    });
+
+    it("supports nanosecond time unit", () => {
+      const result = testedFun(
+        Type.integer(1),
+        Type.atom("second"),
+        Type.atom("nanosecond"),
+      );
+
+      assert.deepStrictEqual(result, Type.integer(1_000_000_000));
+    });
+
+    it("supports microsecond time unit", () => {
+      const result = testedFun(
+        Type.integer(1),
+        Type.atom("microsecond"),
+        Type.atom("millisecond"),
+      );
+
+      // 1 microsecond < 1 millisecond, floor(1/1000) = 0
+      assert.deepStrictEqual(result, integer0);
+    });
+
+    it("supports all deprecated time unit forms", () => {
+      const result = testedFun(
+        Type.integer(1),
+        Type.atom("nano_seconds"),
+        Type.atom("micro_seconds"),
+      );
+
+      // 1 nanosecond < 1 microsecond, floor(1/1000) = 0
+      assert.deepStrictEqual(result, integer0);
+    });
+
+    it("handles large integer values", () => {
+      // Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      const largeValue = Type.integer(9_007_199_254_740_992n);
+
+      const result = testedFun(
+        largeValue,
+        Type.atom("second"),
+        Type.atom("second"),
+      );
+
+      assert.deepStrictEqual(result, largeValue);
+    });
+
+    it("raises ArgumentError if time is not an integer", () => {
+      assertBoxedError(
+        () =>
+          testedFun(Type.float(1.0), Type.atom("second"), Type.atom("second")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not an integer"),
+      );
+    });
+
+    it("raises ArgumentError if fromUnit is invalid", () => {
+      assertBoxedError(
+        () =>
+          testedFun(Type.integer(1), Type.atom("banana"), Type.atom("second")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(2, "invalid time unit"),
+      );
+    });
+
+    it("raises ArgumentError if toUnit is invalid", () => {
+      assertBoxedError(
+        () => testedFun(Type.integer(1), Type.atom("second"), integer0),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(3, "invalid time unit"),
+      );
+    });
+
+    it("raises ArgumentError if fromUnit is a negative integer", () => {
+      assertBoxedError(
+        () => testedFun(Type.integer(1), Type.integer(-1), Type.atom("second")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(2, "invalid time unit"),
+      );
+    });
+
+    it("raises ArgumentError if fromUnit is zero", () => {
+      assertBoxedError(
+        () => testedFun(Type.integer(1), integer0, Type.atom("second")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(2, "invalid time unit"),
+      );
+    });
+
+    it("raises ArgumentError if toUnit is a float", () => {
+      assertBoxedError(
+        () => testedFun(Type.integer(1), Type.atom("second"), Type.float(1.5)),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(3, "invalid time unit"),
+      );
+    });
+
+    it("raises ArgumentError if fromUnit is not an atom or positive integer", () => {
+      assertBoxedError(
+        () =>
+          testedFun(
+            Type.integer(1),
+            Type.bitstring("second"),
+            Type.atom("second"),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(2, "invalid time unit"),
+      );
+    });
+  });
+
+  describe("delete_element/2", () => {
+    const delete_element = Erlang["delete_element/2"];
+
+    it("deletes the only item from a single-item tuple", () => {
+      const result = delete_element(
+        Type.integer(1),
+        Type.tuple([Type.integer(5)]),
+      );
+
+      assert.deepStrictEqual(result, Type.tuple([]));
+    });
+
+    it("deletes the first item from a tuple with multiple items", () => {
+      const tuple = Type.tuple([
+        Type.integer(5),
+        Type.integer(6),
+        Type.integer(7),
+      ]);
+
+      const result = delete_element(Type.integer(1), tuple);
+
+      assert.deepStrictEqual(
+        result,
+        Type.tuple([Type.integer(6), Type.integer(7)]),
+      );
+    });
+
+    it("deletes a middle item from a tuple with multiple items", () => {
+      const tuple = Type.tuple([
+        Type.integer(5),
+        Type.integer(6),
+        Type.integer(7),
+      ]);
+
+      const result = delete_element(Type.integer(2), tuple);
+
+      assert.deepStrictEqual(
+        result,
+        Type.tuple([Type.integer(5), Type.integer(7)]),
+      );
+    });
+
+    it("deletes the last item from a tuple with multiple items", () => {
+      const tuple = Type.tuple([
+        Type.integer(5),
+        Type.integer(6),
+        Type.integer(7),
+      ]);
+
+      const result = delete_element(Type.integer(3), tuple);
+
+      assert.deepStrictEqual(
+        result,
+        Type.tuple([Type.integer(5), Type.integer(6)]),
+      );
+    });
+
+    it("raises ArgumentError if the first argument is not an integer", () => {
+      const tuple = Type.tuple([
+        Type.integer(5),
+        Type.integer(6),
+        Type.integer(7),
+      ]);
+
+      assertBoxedError(
+        () => delete_element(Type.atom("abc"), tuple),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not an integer"),
+      );
+    });
+
+    it("raises ArgumentError if the second argument is not a tuple", () => {
+      assertBoxedError(
+        () => delete_element(Type.integer(1), Type.atom("abc")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(2, "not a tuple"),
+      );
+    });
+
+    it("raises ArgumentError if the given index is greater than the number of elements in the tuple", () => {
+      const tuple = Type.tuple([
+        Type.integer(5),
+        Type.integer(6),
+        Type.integer(7),
+      ]);
+
+      assertBoxedError(
+        () => delete_element(Type.integer(10), tuple),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "out of range"),
+      );
+    });
+
+    it("raises ArgumentError if the given index is 0", () => {
+      const tuple = Type.tuple([
+        Type.integer(5),
+        Type.integer(6),
+        Type.integer(7),
+      ]);
+
+      assertBoxedError(
+        () => delete_element(Type.integer(0), tuple),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "out of range"),
+      );
+    });
+
+    it("raises ArgumentError if the given index is negative", () => {
+      const tuple = Type.tuple([
+        Type.integer(5),
+        Type.integer(6),
+        Type.integer(7),
+      ]);
+
+      assertBoxedError(
+        () => delete_element(Type.integer(-1), tuple),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "out of range"),
       );
     });
   });
@@ -4352,6 +4865,615 @@ describe("Erlang", () => {
     });
   });
 
+  describe("fun_info/1", () => {
+    const fun_info = Erlang["fun_info/1"];
+
+    beforeEach(() => {
+      ERTS.funSequence.reset();
+    });
+
+    it("external function, arity 0", () => {
+      const fun = Type.functionCapture(
+        "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1",
+        "fun_0",
+        0,
+        [],
+        contextFixture(),
+      );
+
+      const result = fun_info(fun);
+
+      const expected = Type.list([
+        Type.tuple([
+          Type.atom("module"),
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1"),
+        ]),
+        Type.tuple([Type.atom("name"), Type.atom("fun_0")]),
+        Type.tuple([Type.atom("arity"), Type.integer(0)]),
+        Type.tuple([Type.atom("env"), Type.list()]),
+        Type.tuple([Type.atom("type"), Type.atom("external")]),
+      ]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("external function, arity 1", () => {
+      const fun = Type.functionCapture(
+        "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1",
+        "fun_1",
+        1,
+        [],
+        contextFixture(),
+      );
+
+      const result = fun_info(fun);
+
+      const expected = Type.list([
+        Type.tuple([
+          Type.atom("module"),
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1"),
+        ]),
+        Type.tuple([Type.atom("name"), Type.atom("fun_1")]),
+        Type.tuple([Type.atom("arity"), Type.integer(1)]),
+        Type.tuple([Type.atom("env"), Type.list()]),
+        Type.tuple([Type.atom("type"), Type.atom("external")]),
+      ]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("external function, arity 2", () => {
+      const fun = Type.functionCapture(
+        "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1",
+        "fun_2",
+        2,
+        [],
+        contextFixture(),
+      );
+
+      const result = fun_info(fun);
+
+      const expected = Type.list([
+        Type.tuple([
+          Type.atom("module"),
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1"),
+        ]),
+        Type.tuple([Type.atom("name"), Type.atom("fun_2")]),
+        Type.tuple([Type.atom("arity"), Type.integer(2)]),
+        Type.tuple([Type.atom("env"), Type.list()]),
+        Type.tuple([Type.atom("type"), Type.atom("external")]),
+      ]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("external function, Erlang module", () => {
+      const fun = Type.functionCapture(
+        ":erlang",
+        "abs",
+        1,
+        [],
+        contextFixture(),
+      );
+
+      const result = fun_info(fun);
+
+      const expected = Type.list([
+        Type.tuple([Type.atom("module"), Type.atom("erlang")]),
+        Type.tuple([Type.atom("name"), Type.atom("abs")]),
+        Type.tuple([Type.atom("arity"), Type.integer(1)]),
+        Type.tuple([Type.atom("env"), Type.list()]),
+        Type.tuple([Type.atom("type"), Type.atom("external")]),
+      ]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("local function, arity 0, empty env", () => {
+      const fun = Type.anonymousFunction(
+        0,
+        [
+          {
+            params: (_context) => [],
+            guards: [],
+            body: (_context) => Type.integer(123),
+          },
+        ],
+        contextFixture({
+          module: "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1",
+        }),
+      );
+
+      const result = fun_info(fun);
+
+      const expected = Type.list([
+        Type.tuple([Type.atom("pid"), ERTS.INIT_PID]),
+        Type.tuple([
+          Type.atom("module"),
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1"),
+        ]),
+        Type.tuple([Type.atom("new_index"), Type.integer(1)]),
+        Type.tuple([
+          Type.atom("new_uniq"),
+          Type.bitstring([
+            Type.bitstringSegment(Type.integer(1), {
+              type: "integer",
+              size: Type.integer(128),
+            }),
+          ]),
+        ]),
+        Type.tuple([Type.atom("index"), Type.integer(1)]),
+        Type.tuple([Type.atom("uniq"), Type.integer(1)]),
+        Type.tuple([Type.atom("name"), Type.atom("anonymous function fn/0")]),
+        Type.tuple([Type.atom("arity"), Type.integer(0)]),
+        Type.tuple([Type.atom("env"), Type.list()]),
+        Type.tuple([Type.atom("type"), Type.atom("local")]),
+      ]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("local function, arity 1, closure reference", () => {
+      const fun = Type.anonymousFunction(
+        1,
+        [
+          {
+            params: (_context) => [Type.variablePattern("x")],
+            guards: [],
+            body: (context) =>
+              Erlang["+/2"](context.vars.x, context.vars.my_var),
+          },
+        ],
+        contextFixture({
+          module: "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1",
+          vars: {my_var: Type.integer(123)},
+        }),
+      );
+
+      const result = fun_info(fun);
+
+      const expected = Type.list([
+        Type.tuple([Type.atom("pid"), ERTS.INIT_PID]),
+        Type.tuple([
+          Type.atom("module"),
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1"),
+        ]),
+        Type.tuple([Type.atom("new_index"), Type.integer(1)]),
+        Type.tuple([
+          Type.atom("new_uniq"),
+          Type.bitstring([
+            Type.bitstringSegment(Type.integer(1), {
+              type: "integer",
+              size: Type.integer(128),
+            }),
+          ]),
+        ]),
+        Type.tuple([Type.atom("index"), Type.integer(1)]),
+        Type.tuple([Type.atom("uniq"), Type.integer(1)]),
+        Type.tuple([Type.atom("name"), Type.atom("anonymous function fn/1")]),
+        Type.tuple([Type.atom("arity"), Type.integer(1)]),
+        Type.tuple([Type.atom("env"), Type.list([Type.integer(123)])]),
+        Type.tuple([Type.atom("type"), Type.atom("local")]),
+      ]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("local function, arity 2, multiple closure references", () => {
+      const fun = Type.anonymousFunction(
+        2,
+        [
+          {
+            params: (_context) => [
+              Type.variablePattern("x"),
+              Type.variablePattern("y"),
+            ],
+            guards: [],
+            body: (context) =>
+              Erlang["+/2"](
+                Erlang["+/2"](
+                  Erlang["+/2"](context.vars.x, context.vars.y),
+                  context.vars.var_a,
+                ),
+                context.vars.var_b,
+              ),
+          },
+        ],
+        contextFixture({
+          module: "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1",
+          vars: {var_a: Type.integer(10), var_b: Type.integer(20)},
+        }),
+      );
+
+      const result = fun_info(fun);
+
+      const expected = Type.list([
+        Type.tuple([Type.atom("pid"), ERTS.INIT_PID]),
+        Type.tuple([
+          Type.atom("module"),
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1"),
+        ]),
+        Type.tuple([Type.atom("new_index"), Type.integer(1)]),
+        Type.tuple([
+          Type.atom("new_uniq"),
+          Type.bitstring([
+            Type.bitstringSegment(Type.integer(1), {
+              type: "integer",
+              size: Type.integer(128),
+            }),
+          ]),
+        ]),
+        Type.tuple([Type.atom("index"), Type.integer(1)]),
+        Type.tuple([Type.atom("uniq"), Type.integer(1)]),
+        Type.tuple([Type.atom("name"), Type.atom("anonymous function fn/2")]),
+        Type.tuple([Type.atom("arity"), Type.integer(2)]),
+        Type.tuple([
+          Type.atom("env"),
+          Type.list([Type.integer(10), Type.integer(20)]),
+        ]),
+        Type.tuple([Type.atom("type"), Type.atom("local")]),
+      ]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("raises ArgumentError if the argument is not a fun", () => {
+      assertBoxedError(
+        () => fun_info(Type.atom("abc")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a fun"),
+      );
+    });
+  });
+
+  describe("fun_info/2", () => {
+    const fun_info = Erlang["fun_info/2"];
+
+    it("external function, item present", () => {
+      const fun = Type.functionCapture(
+        "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1",
+        "fun_1",
+        1,
+        [],
+        contextFixture(),
+      );
+
+      const result = fun_info(fun, Type.atom("arity"));
+      const expected = Type.tuple([Type.atom("arity"), Type.integer(1)]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("external function, item available only for local functions returns undefined", () => {
+      const fun = Type.functionCapture(
+        "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1",
+        "fun_1",
+        1,
+        [],
+        contextFixture(),
+      );
+
+      const result = fun_info(fun, Type.atom("pid"));
+      const expected = Type.tuple([Type.atom("pid"), Type.atom("undefined")]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("local function, item present", () => {
+      const fun = Type.anonymousFunction(
+        1,
+        [
+          {
+            params: (_context) => [Type.variablePattern("x")],
+            guards: [],
+            body: (context) => Erlang["+/2"](context.vars.x, Type.integer(1)),
+          },
+        ],
+        contextFixture({
+          module: Type.alias(
+            "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1",
+          ),
+        }),
+      );
+
+      const result = fun_info(fun, Type.atom("arity"));
+      const expected = Type.tuple([Type.atom("arity"), Type.integer(1)]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("raises ArgumentError if the first arg is not a fun", () => {
+      assertBoxedError(
+        () => fun_info(Type.atom("abc"), Type.atom("arity")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a fun"),
+      );
+    });
+
+    it("raises ArgumentError if the second arg is not an atom", () => {
+      const fun = Type.functionCapture(
+        "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1",
+        "fun_1",
+        1,
+        [],
+        contextFixture(),
+      );
+
+      assertBoxedError(
+        () => fun_info(fun, Type.integer(123)),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(2, "invalid item"),
+      );
+    });
+
+    it("external function, invalid item raises ArgumentError", () => {
+      const fun = Type.functionCapture(
+        "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1",
+        "fun_1",
+        1,
+        [],
+        contextFixture(),
+      );
+
+      assertBoxedError(
+        () => fun_info(fun, Type.atom("invalid_item")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(2, "invalid item"),
+      );
+    });
+
+    it("local function, invalid item raises ArgumentError", () => {
+      const fun = Type.anonymousFunction(
+        1,
+        [
+          {
+            params: (_context) => [Type.variablePattern("x")],
+            guards: [],
+            body: (context) => Erlang["+/2"](context.vars.x, Type.integer(1)),
+          },
+        ],
+        contextFixture({
+          module: Type.alias(
+            "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1",
+          ),
+        }),
+      );
+
+      assertBoxedError(
+        () => fun_info(fun, Type.atom("invalid_item")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(2, "invalid item"),
+      );
+    });
+  });
+
+  describe("function_exported/3", () => {
+    const function_exported = Erlang["function_exported/3"];
+
+    beforeEach(() => {
+      // Set up a mock Elixir module with exports tracking
+      // Mirrors Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2
+
+      // def public_fun_0, do: :ok
+      Interpreter.defineElixirFunction(
+        "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2",
+        "public_fun_0",
+        0,
+        "public",
+        [
+          {
+            params: (_context) => [],
+            guards: [],
+            body: (_context) => Type.atom("ok"),
+          },
+        ],
+      );
+
+      // def public_fun(x), do: x + private_fun(x)
+      Interpreter.defineElixirFunction(
+        "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2",
+        "public_fun",
+        1,
+        "public",
+        [
+          {
+            params: (_context) => [Type.variablePattern("x")],
+            guards: [],
+            body: (context) =>
+              Erlang["+/2"](
+                context.vars.x,
+                globalThis.Elixir_Hologram_Test_Fixtures_ExJsConsistency_Erlang_Module2[
+                  "private_fun/1"
+                ](context.vars.x),
+              ),
+          },
+        ],
+      );
+
+      // defp private_fun(x), do: x * 2
+      Interpreter.defineElixirFunction(
+        "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2",
+        "private_fun",
+        1,
+        "private",
+        [
+          {
+            params: (_context) => [Type.variablePattern("x")],
+            guards: [],
+            body: (context) => Erlang["*/2"](context.vars.x, Type.integer(2)),
+          },
+        ],
+      );
+    });
+
+    describe("Erlang module", () => {
+      it("returns true for existing function", () => {
+        const result = function_exported(
+          Type.atom("erlang"),
+          Type.atom("abs"),
+          Type.integer(1),
+        );
+
+        assertBoxedTrue(result);
+      });
+
+      it("returns false for non-existing function", () => {
+        const result = function_exported(
+          Type.atom("erlang"),
+          Type.atom("nonexistent_function"),
+          Type.integer(1),
+        );
+
+        assertBoxedFalse(result);
+      });
+
+      it("returns false for wrong arity", () => {
+        const result = function_exported(
+          Type.atom("erlang"),
+          Type.atom("abs"),
+          Type.integer(2),
+        );
+
+        assertBoxedFalse(result);
+      });
+
+      it("returns false for non-existing module", () => {
+        const result = function_exported(
+          Type.atom("nonexistent_module"),
+          Type.atom("foo"),
+          Type.integer(1),
+        );
+
+        assertBoxedFalse(result);
+      });
+    });
+
+    describe("Elixir module", () => {
+      it("returns true for public function", () => {
+        const result = function_exported(
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2"),
+          Type.atom("public_fun"),
+          Type.integer(1),
+        );
+
+        assertBoxedTrue(result);
+      });
+
+      it("returns false for private function", () => {
+        const result = function_exported(
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2"),
+          Type.atom("private_fun"),
+          Type.integer(1),
+        );
+
+        assertBoxedFalse(result);
+      });
+
+      it("returns false for non-existing function", () => {
+        const result = function_exported(
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2"),
+          Type.atom("nonexistent_function"),
+          Type.integer(1),
+        );
+
+        assertBoxedFalse(result);
+      });
+
+      it("returns false for wrong arity", () => {
+        const result = function_exported(
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2"),
+          Type.atom("public_fun"),
+          Type.integer(2),
+        );
+
+        assertBoxedFalse(result);
+      });
+
+      it("returns false for non-existing module", () => {
+        const result = function_exported(
+          Type.alias("NonExistentModule"),
+          Type.atom("foo"),
+          Type.integer(1),
+        );
+
+        assertBoxedFalse(result);
+      });
+    });
+
+    describe("arity edge cases", () => {
+      it("returns true for arity 0", () => {
+        const result = function_exported(
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2"),
+          Type.atom("public_fun_0"),
+          Type.integer(0),
+        );
+
+        assertBoxedTrue(result);
+      });
+
+      it("returns false for negative arity", () => {
+        const result = function_exported(
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2"),
+          Type.atom("public_fun"),
+          Type.integer(-1),
+        );
+
+        assertBoxedFalse(result);
+      });
+
+      it("returns false for arity greater than 255", () => {
+        const result = function_exported(
+          Type.alias("Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module2"),
+          Type.atom("public_fun"),
+          Type.integer(256),
+        );
+
+        assertBoxedFalse(result);
+      });
+    });
+
+    describe("errors", () => {
+      it("raises ArgumentError if module is not an atom", () => {
+        assertBoxedError(
+          () =>
+            function_exported(
+              Type.bitstring("not_atom"),
+              Type.atom("foo"),
+              Type.integer(1),
+            ),
+          "ArgumentError",
+          Interpreter.buildArgumentErrorMsg(1, "not an atom"),
+        );
+      });
+
+      it("raises ArgumentError if function is not an atom", () => {
+        assertBoxedError(
+          () =>
+            function_exported(
+              Type.atom("erlang"),
+              Type.bitstring("not_atom"),
+              Type.integer(1),
+            ),
+          "ArgumentError",
+          Interpreter.buildArgumentErrorMsg(2, "not an atom"),
+        );
+      });
+
+      it("raises ArgumentError if arity is not an integer", () => {
+        assertBoxedError(
+          () =>
+            function_exported(
+              Type.atom("erlang"),
+              Type.atom("abs"),
+              Type.float(2.0),
+            ),
+          "ArgumentError",
+          Interpreter.buildArgumentErrorMsg(3, "not an integer"),
+        );
+      });
+    });
+  });
+
   describe("hd/1", () => {
     const hd = Erlang["hd/1"];
 
@@ -4896,6 +6018,878 @@ describe("Erlang", () => {
         () => length(Type.atom("abc")),
         "ArgumentError",
         Interpreter.buildArgumentErrorMsg(1, "not a list"),
+      );
+    });
+  });
+
+  describe("list_to_atom/1", () => {
+    const list_to_atom = Erlang["list_to_atom/1"];
+
+    it("empty list", () => {
+      const result = list_to_atom(Type.list());
+
+      assert.deepStrictEqual(result, Type.atom(""));
+    });
+
+    it("ASCII characters", () => {
+      // ~c"abc" = [97, 98, 99]
+      const result = list_to_atom(
+        Type.list([Type.integer(97), Type.integer(98), Type.integer(99)]),
+      );
+
+      assert.deepStrictEqual(result, Type.atom("abc"));
+    });
+
+    it("Unicode characters", () => {
+      // ~c"全息图" = [20840, 24687, 22270]
+      const result = list_to_atom(
+        Type.list([
+          Type.integer(20_840),
+          Type.integer(24_687),
+          Type.integer(22_270),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.atom("全息图"));
+    });
+
+    it("mixed ASCII and Unicode characters", () => {
+      // ~c"aπb" = [97, 960, 98]
+      const result = list_to_atom(
+        Type.list([Type.integer(97), Type.integer(960), Type.integer(98)]),
+      );
+
+      assert.deepStrictEqual(result, Type.atom("aπb"));
+    });
+
+    it("single character", () => {
+      // ~c"a" = [97]
+      const result = list_to_atom(Type.list([Type.integer(97)]));
+
+      assert.deepStrictEqual(result, Type.atom("a"));
+    });
+
+    it("raises ArgumentError if the argument is not a list", () => {
+      assertBoxedError(
+        () => list_to_atom(Type.atom("abc")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a list"),
+      );
+    });
+
+    it("raises ArgumentError if the argument is an improper list", () => {
+      assertBoxedError(
+        () =>
+          list_to_atom(Type.improperList([Type.integer(97), Type.integer(98)])),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a proper list"),
+      );
+    });
+
+    it("raises ArgumentError if list contains non-integer element", () => {
+      assertBoxedError(
+        () =>
+          list_to_atom(
+            Type.list([Type.integer(97), Type.atom("x"), Type.integer(99)]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a list of characters"),
+      );
+    });
+
+    it("raises ArgumentError if list contains invalid codepoint", () => {
+      assertBoxedError(
+        () => list_to_atom(Type.list([Type.integer(-1)])),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a list of characters"),
+      );
+    });
+
+    it("raises ArgumentError if given a binary instead of a charlist", () => {
+      assertBoxedError(
+        () => list_to_atom(Type.bitstring("abc")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a list"),
+      );
+    });
+
+    it("raises ArgumentError if given chardata with nested list", () => {
+      assertBoxedError(
+        () =>
+          list_to_atom(
+            Type.list([
+              Type.list([Type.integer(97), Type.integer(98)]),
+              Type.integer(99),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a list of characters"),
+      );
+    });
+
+    it("raises ArgumentError if given iolist containing binary", () => {
+      assertBoxedError(
+        () => list_to_atom(Type.list([Type.integer(97), Type.bitstring("bc")])),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a list of characters"),
+      );
+    });
+  });
+
+  describe("list_to_binary/1", () => {
+    const list_to_binary = Erlang["list_to_binary/1"];
+
+    it("empty list", () => {
+      const result = list_to_binary(Type.list());
+
+      assert.deepStrictEqual(result, Type.bitstring(""));
+    });
+
+    it("list of integers", () => {
+      const result = list_to_binary(
+        Type.list([Type.integer(1), Type.integer(2), Type.integer(3)]),
+      );
+
+      assert.deepStrictEqual(result, Bitstring.fromBytes([1, 2, 3]));
+    });
+
+    it("list of binaries", () => {
+      const result = list_to_binary(
+        Type.list([Bitstring.fromBytes([1, 2]), Bitstring.fromBytes([3, 4])]),
+      );
+
+      assert.deepStrictEqual(result, Bitstring.fromBytes([1, 2, 3, 4]));
+    });
+
+    it("nested list", () => {
+      const result = list_to_binary(
+        Type.list([
+          Type.list([Type.integer(1), Type.integer(2)]),
+          Type.list([Type.integer(3), Type.integer(4)]),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Bitstring.fromBytes([1, 2, 3, 4]));
+    });
+
+    it("deeply nested list", () => {
+      const result = list_to_binary(
+        Type.list([
+          Type.list([
+            Type.integer(1),
+            Type.list([
+              Type.integer(2),
+              Type.list([Type.integer(3), Type.list([Type.integer(4)])]),
+            ]),
+          ]),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Bitstring.fromBytes([1, 2, 3, 4]));
+    });
+
+    it("improper list with binary tail", () => {
+      const result = list_to_binary(
+        Type.improperList([Type.integer(1), Bitstring.fromBytes([2, 3])]),
+      );
+
+      assert.deepStrictEqual(result, Bitstring.fromBytes([1, 2, 3]));
+    });
+
+    it("mixed integers and binaries (iolist from doc example)", () => {
+      const bin1 = Bitstring.fromBytes([1, 2, 3]);
+      const bin2 = Bitstring.fromBytes([4, 5]);
+      const bin3 = Bitstring.fromBytes([6]);
+
+      const result = list_to_binary(
+        Type.improperList([
+          bin1,
+          Type.integer(1),
+          Type.list([Type.integer(2), Type.integer(3), bin2]),
+          Type.integer(4),
+          bin3,
+        ]),
+      );
+
+      assert.deepStrictEqual(
+        result,
+        Bitstring.fromBytes([1, 2, 3, 1, 2, 3, 4, 5, 4, 6]),
+      );
+    });
+
+    it("list with empty sublists", () => {
+      const result = list_to_binary(
+        Type.list([Type.list(), Type.list(), Type.list()]),
+      );
+
+      assert.deepStrictEqual(result, Type.bitstring(""));
+    });
+
+    it("boundary values 0 and 255", () => {
+      const result = list_to_binary(
+        Type.list([Type.integer(0), Type.integer(255)]),
+      );
+
+      assert.deepStrictEqual(result, Bitstring.fromBytes([0, 255]));
+    });
+
+    it("raises ArgumentError if the argument is not a list", () => {
+      assertBoxedError(
+        () => list_to_binary(Type.atom("abc")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not an iolist term"),
+      );
+    });
+
+    it("raises ArgumentError if the argument is a binary", () => {
+      assertBoxedError(
+        () => list_to_binary(Type.bitstring("abc")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not an iolist term"),
+      );
+    });
+
+    it("raises ArgumentError if list contains an atom", () => {
+      assertBoxedError(
+        () => list_to_binary(Type.list([Type.atom("abc")])),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not an iolist term"),
+      );
+    });
+
+    it("raises ArgumentError if list contains a float", () => {
+      assertBoxedError(
+        () => list_to_binary(Type.list([Type.float(1.0)])),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not an iolist term"),
+      );
+    });
+
+    it("raises ArgumentError if list contains an integer greater than 255", () => {
+      assertBoxedError(
+        () => list_to_binary(Type.list([Type.integer(256)])),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not an iolist term"),
+      );
+    });
+
+    it("raises ArgumentError if list contains a negative integer", () => {
+      assertBoxedError(
+        () => list_to_binary(Type.list([Type.integer(-1)])),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not an iolist term"),
+      );
+    });
+
+    it("raises ArgumentError if improper list has a non-binary tail", () => {
+      assertBoxedError(
+        () =>
+          list_to_binary(
+            Type.improperList([
+              Type.integer(1),
+              Type.integer(2),
+              Type.atom("abc"),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not an iolist term"),
+      );
+    });
+
+    it("raises ArgumentError if list contains a non-byte-aligned bitstring", () => {
+      assertBoxedError(
+        () =>
+          list_to_binary(
+            Type.list([
+              Type.bitstring([
+                Type.bitstringSegment(Type.integer(1), {
+                  type: "integer",
+                  size: Type.integer(3),
+                }),
+              ]),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not an iolist term"),
+      );
+    });
+  });
+
+  // Note: due to practical reasons the behaviour of the client version is inconsistent with the server version.
+  // The client version works exactly the same as list_to_atom/1.
+  describe("list_to_existing_atom/1", () => {
+    const testedFun = Erlang["list_to_existing_atom/1"];
+
+    it("delegates to list_to_atom/1", () => {
+      const randomStr = `${Math.random()}`;
+      const codePoints = Type.charlist(randomStr);
+
+      const result = testedFun(codePoints);
+      const expected = Erlang["list_to_atom/1"](codePoints);
+
+      assert.deepStrictEqual(result, expected);
+    });
+  });
+
+  describe("list_to_float/1", () => {
+    const list_to_float = Erlang["list_to_float/1"];
+
+    it("positive float without sign in decimal notation", () => {
+      // ~c"1.23" = [49, 46, 50, 51]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(49),
+          Type.integer(46),
+          Type.integer(50),
+          Type.integer(51),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(1.23));
+    });
+
+    it("positive float with sign in decimal notation", () => {
+      // ~c"+1.23" = [43, 49, 46, 50, 51]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(43),
+          Type.integer(49),
+          Type.integer(46),
+          Type.integer(50),
+          Type.integer(51),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(1.23));
+    });
+
+    it("negative float in decimal notation", () => {
+      // ~c"-1.23" = [45, 49, 46, 50, 51]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(45),
+          Type.integer(49),
+          Type.integer(46),
+          Type.integer(50),
+          Type.integer(51),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(-1.23));
+    });
+
+    it("unsigned zero float in decimal notation", () => {
+      // ~c"0.0" = [48, 46, 48]
+      const result = list_to_float(
+        Type.list([Type.integer(48), Type.integer(46), Type.integer(48)]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(0.0));
+    });
+
+    it("signed positive zero float in decimal notation", () => {
+      // ~c"+0.0" = [43, 48, 46, 48]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(43),
+          Type.integer(48),
+          Type.integer(46),
+          Type.integer(48),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(+0.0));
+    });
+
+    it("signed negative zero float in decimal notation", () => {
+      // ~c"-0.0" = [45, 48, 46, 48]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(45),
+          Type.integer(48),
+          Type.integer(46),
+          Type.integer(48),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(-0.0));
+    });
+
+    it("positive float in scientific notation", () => {
+      // ~c"1.23456e+3" = [49, 46, 50, 51, 52, 53, 54, 101, 43, 51]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(49),
+          Type.integer(46),
+          Type.integer(50),
+          Type.integer(51),
+          Type.integer(52),
+          Type.integer(53),
+          Type.integer(54),
+          Type.integer(101),
+          Type.integer(43),
+          Type.integer(51),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(1234.56));
+    });
+
+    it("negative float in scientific notation", () => {
+      // ~c"-1.23456e+3" = [45, 49, 46, 50, 51, 52, 53, 54, 101, 43, 51]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(45),
+          Type.integer(49),
+          Type.integer(46),
+          Type.integer(50),
+          Type.integer(51),
+          Type.integer(52),
+          Type.integer(53),
+          Type.integer(54),
+          Type.integer(101),
+          Type.integer(43),
+          Type.integer(51),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(-1234.56));
+    });
+
+    it("unsigned zero float in scientific notation", () => {
+      // ~c"0.0e+1" = [48, 46, 48, 101, 43, 49]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(48),
+          Type.integer(46),
+          Type.integer(48),
+          Type.integer(101),
+          Type.integer(43),
+          Type.integer(49),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(0.0));
+    });
+
+    it("signed positive zero float in scientific notation", () => {
+      // ~c"+0.0e+1" = [43, 48, 46, 48, 101, 43, 49]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(43),
+          Type.integer(48),
+          Type.integer(46),
+          Type.integer(48),
+          Type.integer(101),
+          Type.integer(43),
+          Type.integer(49),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(+0.0));
+    });
+
+    it("signed negative zero float in scientific notation", () => {
+      // ~c"-0.0e+1" = [45, 48, 46, 48, 101, 43, 49]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(45),
+          Type.integer(48),
+          Type.integer(46),
+          Type.integer(48),
+          Type.integer(101),
+          Type.integer(43),
+          Type.integer(49),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(-0.0));
+    });
+
+    it("with leading zeros", () => {
+      // ~c"00012.34" = [48, 48, 48, 49, 50, 46, 51, 52]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(48),
+          Type.integer(48),
+          Type.integer(48),
+          Type.integer(49),
+          Type.integer(50),
+          Type.integer(46),
+          Type.integer(51),
+          Type.integer(52),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(12.34));
+    });
+
+    it("uppercase scientific notation", () => {
+      // ~c"1.23456E3" = [49, 46, 50, 51, 52, 53, 54, 69, 51]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(49),
+          Type.integer(46),
+          Type.integer(50),
+          Type.integer(51),
+          Type.integer(52),
+          Type.integer(53),
+          Type.integer(54),
+          Type.integer(69),
+          Type.integer(51),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(1234.56));
+    });
+
+    it("negative exponent", () => {
+      // ~c"1.23e-3" = [49, 46, 50, 51, 101, 45, 51]
+      const result = list_to_float(
+        Type.list([
+          Type.integer(49),
+          Type.integer(46),
+          Type.integer(50),
+          Type.integer(51),
+          Type.integer(101),
+          Type.integer(45),
+          Type.integer(51),
+        ]),
+      );
+
+      assert.deepStrictEqual(result, Type.float(0.00123));
+    });
+
+    it("raises ArgumentError if the argument is not a list", () => {
+      assertBoxedError(
+        () => list_to_float(Type.atom("abc")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a list"),
+      );
+    });
+
+    it("raises ArgumentError if the argument is an improper list", () => {
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.improperList([
+              Type.integer(49),
+              Type.integer(46),
+              Type.integer(50),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a list"),
+      );
+    });
+
+    it("raises ArgumentError if list contains non-integer element", () => {
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.list([Type.integer(49), Type.atom("abc"), Type.integer(51)]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("positive integer", () => {
+      // ~c"123" = [49, 50, 51]
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.list([Type.integer(49), Type.integer(50), Type.integer(51)]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("negative integer", () => {
+      // ~c"-123" = [45, 49, 50, 51]
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.list([
+              Type.integer(45),
+              Type.integer(49),
+              Type.integer(50),
+              Type.integer(51),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("zero integer", () => {
+      // ~c"0" = [48]
+      assertBoxedError(
+        () => list_to_float(Type.list([Type.integer(48)])),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("with underscore", () => {
+      // ~c"1_000.5" = [49, 95, 48, 48, 48, 46, 53]
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.list([
+              Type.integer(49),
+              Type.integer(95),
+              Type.integer(48),
+              Type.integer(48),
+              Type.integer(48),
+              Type.integer(46),
+              Type.integer(53),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("invalid float format", () => {
+      // ~c"12.3.4" = [49, 50, 46, 51, 46, 52]
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.list([
+              Type.integer(49),
+              Type.integer(50),
+              Type.integer(46),
+              Type.integer(51),
+              Type.integer(46),
+              Type.integer(52),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("non-numeric text", () => {
+      // ~c"abc" = [97, 98, 99]
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.list([Type.integer(97), Type.integer(98), Type.integer(99)]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("empty input", () => {
+      assertBoxedError(
+        () => list_to_float(Type.list()),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("decimal point only", () => {
+      // ~c"." = [46]
+      assertBoxedError(
+        () => list_to_float(Type.list([Type.integer(46)])),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("with leading dot", () => {
+      // ~c".5" = [46, 53]
+      assertBoxedError(
+        () => list_to_float(Type.list([Type.integer(46), Type.integer(53)])),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("with trailing dot", () => {
+      // ~c"5." = [53, 46]
+      assertBoxedError(
+        () => list_to_float(Type.list([Type.integer(53), Type.integer(46)])),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("scientific notation without the fractional part", () => {
+      // ~c"3e10" = [51, 101, 49, 48]
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.list([
+              Type.integer(51),
+              Type.integer(101),
+              Type.integer(49),
+              Type.integer(48),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("with trailing exponent marker", () => {
+      // ~c"2e" = [50, 101]
+      assertBoxedError(
+        () => list_to_float(Type.list([Type.integer(50), Type.integer(101)])),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("with leading whitespace", () => {
+      // ~c" 12.3" = [32, 49, 50, 46, 51]
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.list([
+              Type.integer(32),
+              Type.integer(49),
+              Type.integer(50),
+              Type.integer(46),
+              Type.integer(51),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("with trailing whitespace", () => {
+      // ~c"12.3 " = [49, 50, 46, 51, 32]
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.list([
+              Type.integer(49),
+              Type.integer(50),
+              Type.integer(46),
+              Type.integer(51),
+              Type.integer(32),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("with multiple exponent markers", () => {
+      // ~c"1e2e3" = [49, 101, 50, 101, 51]
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.list([
+              Type.integer(49),
+              Type.integer(101),
+              Type.integer(50),
+              Type.integer(101),
+              Type.integer(51),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("Infinity text", () => {
+      // ~c"Infinity" = [73, 110, 102, 105, 110, 105, 116, 121]
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.list([
+              Type.integer(73),
+              Type.integer(110),
+              Type.integer(102),
+              Type.integer(105),
+              Type.integer(110),
+              Type.integer(105),
+              Type.integer(116),
+              Type.integer(121),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
+      );
+    });
+
+    it("hex-style JS float", () => {
+      // ~c"0x1.fp2" = [48, 120, 49, 46, 102, 112, 50]
+      assertBoxedError(
+        () =>
+          list_to_float(
+            Type.list([
+              Type.integer(48),
+              Type.integer(120),
+              Type.integer(49),
+              Type.integer(46),
+              Type.integer(102),
+              Type.integer(112),
+              Type.integer(50),
+            ]),
+          ),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(
+          1,
+          "not a textual representation of a float",
+        ),
       );
     });
   });
@@ -5558,6 +7552,241 @@ describe("Erlang", () => {
     });
   });
 
+  describe("list_to_tuple/1", () => {
+    const list_to_tuple = Erlang["list_to_tuple/1"];
+
+    it("non-empty list", () => {
+      const data = [Type.integer(1), Type.integer(2), Type.integer(3)];
+      const list = Type.list(data);
+
+      const result = list_to_tuple(list);
+      const expected = Type.tuple(data);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("empty list", () => {
+      const result = list_to_tuple(Type.list());
+
+      assert.deepStrictEqual(result, Type.tuple());
+    });
+
+    it("raises ArgumentError if the argument is not a list", () => {
+      assertBoxedError(
+        () => list_to_tuple(Type.atom("abc")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a list"),
+      );
+    });
+
+    it("raises ArgumentError if the argument is an improper list", () => {
+      const list = Type.improperList([
+        Type.integer(1),
+        Type.integer(2),
+        Type.integer(3),
+      ]);
+
+      assertBoxedError(
+        () => list_to_tuple(list),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a list"),
+      );
+    });
+  });
+
+  describe("localtime/0", () => {
+    const localtime = Erlang["localtime/0"];
+
+    it("returns a tuple with date and time", () => {
+      // Type checks
+
+      const result = localtime();
+      assert.isTrue(Type.isTuple(result));
+      assert.strictEqual(result.data.length, 2);
+
+      const date = result.data[0];
+      assert.isTrue(Type.isTuple(date));
+      assert.strictEqual(date.data.length, 3);
+
+      const [year, month, day] = date.data;
+      assert.isTrue(Type.isInteger(year));
+      assert.isTrue(Type.isInteger(month));
+      assert.isTrue(Type.isInteger(day));
+
+      const time = result.data[1];
+      assert.isTrue(Type.isTuple(time));
+      assert.strictEqual(time.data.length, 3);
+
+      const [hour, minute, second] = time.data;
+      assert.isTrue(Type.isInteger(hour));
+      assert.isTrue(Type.isInteger(minute));
+      assert.isTrue(Type.isInteger(second));
+
+      // Range checks
+      assert.isAtLeast(year.value, 1970n);
+      assert.isAtMost(year.value, 2100n);
+      assert.isAtLeast(month.value, 1n);
+      assert.isAtMost(month.value, 12n);
+      assert.isAtLeast(day.value, 1n);
+      assert.isAtMost(day.value, 31n);
+      assert.isAtLeast(hour.value, 0n);
+      assert.isAtMost(hour.value, 23n);
+      assert.isAtLeast(minute.value, 0n);
+      assert.isAtMost(minute.value, 59n);
+      assert.isAtLeast(second.value, 0n);
+      assert.isAtMost(second.value, 59n);
+    });
+  });
+
+  describe("make_fun/3", () => {
+    const make_fun = Erlang["make_fun/3"];
+
+    const moduleText = "Hologram.Test.Fixtures.ExJsConsistency.Erlang.Module1";
+    const module = Type.alias(moduleText);
+
+    it("creates a function capture from an Elixir module function with no args", () => {
+      const result = make_fun(module, Type.atom("fun_0"), integer0);
+
+      assert.isTrue(Type.isAnonymousFunction(result));
+      assert.equal(result.capturedModule, moduleText);
+      assert.equal(result.capturedFunction, "fun_0");
+      assert.equal(result.arity, 0);
+
+      const callResult = Interpreter.callAnonymousFunction(result, []);
+      assert.deepStrictEqual(callResult, Type.integer(123));
+    });
+
+    it("creates a function capture from an Elixir module function with a single arg", () => {
+      const result = make_fun(module, Type.atom("fun_1"), integer1);
+
+      assert.isTrue(Type.isAnonymousFunction(result));
+      assert.equal(result.capturedModule, moduleText);
+      assert.equal(result.capturedFunction, "fun_1");
+      assert.equal(result.arity, 1);
+
+      const callResult = Interpreter.callAnonymousFunction(result, [
+        Type.integer(9),
+      ]);
+
+      assert.deepStrictEqual(callResult, Type.integer(109));
+    });
+
+    it("creates a function capture from an Elixir module function with multiple args", () => {
+      const result = make_fun(module, Type.atom("fun_2"), integer2);
+
+      assert.isTrue(Type.isAnonymousFunction(result));
+      assert.equal(result.capturedModule, moduleText);
+      assert.equal(result.capturedFunction, "fun_2");
+      assert.equal(result.arity, 2);
+
+      const callResult = Interpreter.callAnonymousFunction(result, [
+        Type.integer(3),
+        Type.integer(4),
+      ]);
+
+      assert.deepStrictEqual(callResult, Type.integer(7));
+    });
+
+    it("creates a function capture from an Erlang module function", () => {
+      const erlangModule = Type.atom("erlang");
+      const result = make_fun(erlangModule, Type.atom("+"), integer2);
+
+      assert.isTrue(Type.isAnonymousFunction(result));
+      assert.equal(result.capturedModule, ":erlang");
+      assert.equal(result.capturedFunction, "+");
+      assert.equal(result.arity, 2);
+
+      const callResult = Interpreter.callAnonymousFunction(result, [
+        Type.integer(2),
+        Type.integer(3),
+      ]);
+
+      assert.deepStrictEqual(callResult, Type.integer(5));
+    });
+
+    it("creates a function capture with maximum arity 255", () => {
+      const result = make_fun(module, Type.atom("fun_0"), Type.integer(255));
+
+      assert.isTrue(Type.isAnonymousFunction(result));
+      assert.equal(result.capturedModule, moduleText);
+      assert.equal(result.capturedFunction, "fun_0");
+      assert.equal(result.arity, 255);
+    });
+
+    it("creates a function capture for a non-existent module", () => {
+      const nonExistentModule = Type.alias("NonExistentModule");
+
+      const result = make_fun(
+        nonExistentModule,
+        Type.atom("some_fun"),
+        integer1,
+      );
+
+      assert.isTrue(Type.isAnonymousFunction(result));
+      assert.equal(result.capturedModule, "NonExistentModule");
+      assert.equal(result.capturedFunction, "some_fun");
+      assert.equal(result.arity, 1);
+    });
+
+    it("creates a function capture for a non-existent function", () => {
+      const result = make_fun(module, Type.atom("nonexistent_fun"), integer1);
+
+      assert.isTrue(Type.isAnonymousFunction(result));
+      assert.equal(result.capturedModule, moduleText);
+      assert.equal(result.capturedFunction, "nonexistent_fun");
+      assert.equal(result.arity, 1);
+    });
+
+    it("creates a function capture for a non-matching arity", () => {
+      const result = make_fun(module, Type.atom("fun_1"), integer2);
+
+      assert.isTrue(Type.isAnonymousFunction(result));
+      assert.equal(result.capturedModule, moduleText);
+      assert.equal(result.capturedFunction, "fun_1");
+      assert.equal(result.arity, 2);
+    });
+
+    it("raises ArgumentError if the first argument is not an atom", () => {
+      assertBoxedError(
+        () => make_fun(integer123, Type.atom("fun_0"), integer0),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not an atom"),
+      );
+    });
+
+    it("raises ArgumentError if the second argument is not an atom", () => {
+      assertBoxedError(
+        () => make_fun(module, integer123, integer0),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(2, "not an atom"),
+      );
+    });
+
+    it("raises ArgumentError if the third argument is not an integer", () => {
+      assertBoxedError(
+        () => make_fun(module, Type.atom("fun_0"), float2),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(3, "not an integer"),
+      );
+    });
+
+    it("raises ArgumentError if the third argument is a negative integer", () => {
+      assertBoxedError(
+        () => make_fun(module, Type.atom("fun_0"), Type.integer(-1)),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(3, "out of range"),
+      );
+    });
+
+    it("raises ArgumentError if the third argument exceeds maximum arity", () => {
+      assertBoxedError(
+        () => make_fun(module, Type.atom("fun_0"), Type.integer(256)),
+        "ArgumentError",
+        "argument error",
+      );
+    });
+  });
+
   describe("make_ref/0", () => {
     const make_ref = Erlang["make_ref/0"];
 
@@ -5607,6 +7836,41 @@ describe("Erlang", () => {
     });
   });
 
+  describe("map_get/2", () => {
+    const map_get = Erlang["map_get/2"];
+
+    it("returns the value associated with the given key if map contains the key", () => {
+      const key = Type.atom("b");
+      const value = Type.integer(2);
+
+      const map = Type.map([
+        [Type.atom("a"), Type.integer(1)],
+        [key, value],
+      ]);
+
+      assert.deepStrictEqual(map_get(key, map), value);
+    });
+
+    it("raises BadMapError if the second argument is not a map", () => {
+      assertBoxedError(
+        () => map_get(Type.atom("a"), Type.integer(1)),
+        "BadMapError",
+        "expected a map, got: 1",
+      );
+    });
+
+    it("raises KeyError if the map doesn't contain the given key", () => {
+      const key = Type.atom("a");
+      const map = Type.map();
+
+      assertBoxedError(
+        () => map_get(key, map),
+        "KeyError",
+        Interpreter.buildKeyErrorMsg(key, map),
+      );
+    });
+  });
+
   describe("map_size/1", () => {
     const map_size = Erlang["map_size/1"];
 
@@ -5624,6 +7888,132 @@ describe("Erlang", () => {
         () => map_size(Type.atom("abc")),
         "BadMapError",
         "expected a map, got: :abc",
+      );
+    });
+  });
+
+  describe("monotonic_time/0", () => {
+    const monotonic_time = Erlang["monotonic_time/0"];
+
+    it("returns an integer", () => {
+      const result = monotonic_time();
+
+      assert.isTrue(Type.isInteger(result));
+    });
+
+    it("is monotonic non-decreasing", () => {
+      const t1 = monotonic_time().value;
+      const t2 = monotonic_time().value;
+
+      assert.isTrue(t2 >= t1);
+    });
+
+    describe("client-only behaviour", () => {
+      it("uses fast path for small values (< 9_007_199_254 ms / ~104 days)", () => {
+        const originalNow = performance.now;
+
+        try {
+          // Mock performance.now() to return a small value (1 second)
+          performance.now = () => 1000.123456;
+
+          const result = monotonic_time();
+
+          // 1000.123456 ms * 1_000_000 = 1000123456 ns
+          assertBoxedStrictEqual(result, Type.integer(1_000_123_456));
+        } finally {
+          performance.now = originalNow;
+        }
+      });
+
+      it("uses safe path for large values (>= 9_007_199_254 ms / ~104 days)", () => {
+        const originalNow = performance.now;
+
+        try {
+          // Mock performance.now() to return a value >= 9_007_199_254 ms (~104 days)
+          // 10_000_000_000.5 ms (using .5 to avoid float precision issues)
+          performance.now = () => 10_000_000_000.5;
+
+          const result = monotonic_time();
+
+          // 10_000_000_000 ms * 1_000_000 = 10000000000000000 ns (whole part)
+          // 0.5 ms * 1_000_000 = 500000 ns (fractional part)
+          // Total = 10000000000500000 ns
+          assertBoxedStrictEqual(result, Type.integer(10_000_000_000_500_000n));
+        } finally {
+          performance.now = originalNow;
+        }
+      });
+    });
+  });
+
+  describe("monotonic_time/1", () => {
+    const monotonic_time = Erlang["monotonic_time/1"];
+
+    it("with valid atom unit", () => {
+      const result = monotonic_time(Type.atom("second"));
+
+      assert.isTrue(Type.isInteger(result));
+    });
+
+    it("with valid integer unit", () => {
+      const result = monotonic_time(Type.integer(1000n));
+
+      assert.isTrue(Type.isInteger(result));
+    });
+
+    it("applies time unit conversion", () => {
+      const micro = monotonic_time(Type.atom("microsecond")).value;
+      const nano = monotonic_time(Type.atom("nanosecond")).value;
+
+      // Use absolute values since monotonic_time can be negative
+      const absMicro = micro >= 0n ? micro : -micro;
+      const absNano = nano >= 0n ? nano : -nano;
+
+      // Allow small timing drift between calls
+      assert.isTrue(absNano >= absMicro * 999n);
+      assert.isTrue(absNano <= absMicro * 1001n + 1000n);
+    });
+
+    it("raises ArgumentError when argument is not atom or integer", () => {
+      assertBoxedError(
+        () => monotonic_time(Type.float(1.0)),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "invalid time unit"),
+      );
+    });
+
+    it("raises ArgumentError when atom argument is not a valid time unit", () => {
+      assertBoxedError(
+        () => monotonic_time(Type.atom("invalid")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "invalid time unit"),
+      );
+    });
+
+    it("raises ArgumentError when integer argument is 0", () => {
+      assertBoxedError(
+        () => monotonic_time(Type.integer(0)),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "invalid time unit"),
+      );
+    });
+
+    it("raises ArgumentError when integer argument is negative", () => {
+      assertBoxedError(
+        () => monotonic_time(Type.integer(-1)),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "invalid time unit"),
+      );
+    });
+  });
+
+  // On the server, node/0 returns `nonode@nohost` if the node is not alive,
+  // or the actual node name if it is. On the client it always returns `hologram_client`.
+  describe("node/0", () => {
+    it("returns local node", () => {
+      assert.deepStrictEqual(
+        Erlang["node/0"](),
+        Type.atom(ERTS.nodeTable.CLIENT_NODE),
       );
     });
   });
@@ -5701,6 +8091,86 @@ describe("Erlang", () => {
           ),
         "ArgumentError",
         "argument error: nil",
+      );
+    });
+  });
+
+  describe("pid_to_list/1", () => {
+    const testedFun = Erlang["pid_to_list/1"];
+
+    it("single digit segments", () => {
+      const pid = Type.pid("hologram_client", [0, 1, 2], "client");
+      const result = testedFun(pid);
+
+      // "<0.1.2>" has codepoints [60, 48, 46, 49, 46, 50, 62]
+      const expected = Type.list([
+        Type.integer(60), // <
+        Type.integer(48), // 0
+        Type.integer(46), // .
+        Type.integer(49), // 1
+        Type.integer(46), // .
+        Type.integer(50), // 2
+        Type.integer(62), // >
+      ]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("multi-digit segments", () => {
+      const pid = Type.pid("hologram_client", [0, 11, 222], "client");
+      const result = testedFun(pid);
+
+      // "<0.11.222>" has codepoints [60, 48, 46, 49, 49, 46, 50, 50, 50, 62]
+      const expected = Type.list([
+        Type.integer(60), // <
+        Type.integer(48), // 0
+        Type.integer(46), // .
+        Type.integer(49), // 1
+        Type.integer(49), // 1
+        Type.integer(46), // .
+        Type.integer(50), // 2
+        Type.integer(50), // 2
+        Type.integer(50), // 2
+        Type.integer(62), // >
+      ]);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("not a pid", () => {
+      assertBoxedError(
+        () => testedFun(Type.integer(123)),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a pid"),
+      );
+    });
+  });
+
+  describe("ref_to_list/1", () => {
+    const ref_to_list = Erlang["ref_to_list/1"];
+
+    beforeEach(() => {
+      ERTS.nodeTable.reset();
+    });
+
+    it("reference for local node", () => {
+      const reference = Type.reference(
+        ERTS.nodeTable.CLIENT_NODE,
+        0,
+        [3, 2, 1],
+      );
+
+      const result = ref_to_list(reference);
+      const expected = Type.charlist("#Ref<0.1.2.3>");
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("not a reference", () => {
+      assertBoxedError(
+        () => ref_to_list(Type.atom("abc")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a reference"),
       );
     });
   });
@@ -5793,6 +8263,147 @@ describe("Erlang", () => {
         () => testedFun(Type.integer(5), Type.atom("abc")),
         "ArithmeticError",
         "bad argument in arithmetic expression: rem(5, :abc)",
+      );
+    });
+  });
+
+  describe("round/1", () => {
+    const testedFun = Erlang["round/1"];
+
+    it("rounds positive float with fractional part less than 0.5 down", () => {
+      const result = testedFun(Type.float(1.23));
+
+      assert.deepStrictEqual(result, integer1);
+    });
+
+    it("rounds positive float with fractional part greater than 0.5 up", () => {
+      const result = testedFun(Type.float(1.67));
+
+      assert.deepStrictEqual(result, integer2);
+    });
+
+    it("rounds positive float with fractional part equal to 0.5 away from zero (up)", () => {
+      const result = testedFun(Type.float(5.5));
+
+      assert.deepStrictEqual(result, integer6);
+    });
+
+    it("rounds negative float with fractional part less than 0.5 up toward zero", () => {
+      const result = testedFun(Type.float(-1.23));
+      const expected = Type.integer(-1);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("rounds negative float with fractional part greater than 0.5 down away from zero", () => {
+      const result = testedFun(Type.float(-1.67));
+      const expected = Type.integer(-2);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("rounds negative float with fractional part equal to 0.5 away from zero (down)", () => {
+      const result = testedFun(Type.float(-5.5));
+      const expected = Type.integer(-6);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("keeps positive float without fractional part unchanged", () => {
+      const result = testedFun(Type.float(1.0));
+
+      assert.deepStrictEqual(result, integer1);
+    });
+
+    it("keeps negative float without fractional part unchanged", () => {
+      const result = testedFun(Type.float(-1.0));
+      const expected = Type.integer(-1);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("keeps signed negative zero float unchanged", () => {
+      const result = testedFun(Type.float(-0.0));
+
+      assert.deepStrictEqual(result, integer0);
+    });
+
+    it("keeps signed positive zero float unchanged", () => {
+      const result = testedFun(Type.float(+0.0));
+
+      assert.deepStrictEqual(result, integer0);
+    });
+
+    it("keeps unsigned zero float unchanged", () => {
+      const result = testedFun(Type.float(0.0));
+
+      assert.deepStrictEqual(result, integer0);
+    });
+
+    it("rounds 0.5 away from zero", () => {
+      const result = testedFun(Type.float(0.5));
+
+      assert.deepStrictEqual(result, integer1);
+    });
+
+    it("rounds -0.5 away from zero", () => {
+      const result = testedFun(Type.float(-0.5));
+      const expected = Type.integer(-1);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("keeps positive integer unchanged", () => {
+      const result = testedFun(integer1);
+
+      assert.deepStrictEqual(result, integer1);
+    });
+
+    it("keeps negative integer unchanged", () => {
+      const integer = Type.integer(-1);
+      const result = testedFun(integer);
+
+      assert.deepStrictEqual(result, integer);
+    });
+
+    it("keeps zero integer unchanged", () => {
+      const result = testedFun(integer0);
+
+      assert.deepStrictEqual(result, integer0);
+    });
+
+    it("handles MAX_SAFE_INTEGER float", () => {
+      // Number.MAX_SAFE_INTEGER == 9_007_199_254_740_991
+      const result = testedFun(Type.float(9_007_199_254_740_991.0));
+      const expected = Type.integer(9_007_199_254_740_991n);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("handles MIN_SAFE_INTEGER float", () => {
+      // Number.MIN_SAFE_INTEGER == -9_007_199_254_740_991
+      const result = testedFun(Type.float(-9_007_199_254_740_991.0));
+      const expected = Type.integer(-9_007_199_254_740_991n);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("handles large float that loses precision", () => {
+      // This demonstrates that float representation limits apply before rounding
+      // 36_028_797_018_963_969.0 cannot be represented exactly as a float
+      // It's stored as 36_028_797_018_963_968.0
+      // eslint-disable-next-line no-loss-of-precision
+      const result = testedFun(Type.float(36_028_797_018_963_969.0));
+      const expected = Type.integer(36_028_797_018_963_968n);
+
+      assert.deepStrictEqual(result, expected);
+    });
+
+    it("raises ArgumentError if the argument is not a number", () => {
+      assertBoxedError(
+        () => testedFun(Type.atom("abc")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a number"),
       );
     });
   });
@@ -5966,6 +8577,39 @@ describe("Erlang", () => {
     });
   });
 
+  // Simplified tests since JS port delegates to :os.system_time/0
+  describe("system_time/0", () => {
+    const system_time = Erlang["system_time/0"];
+
+    // Note: Elixir test is named "returns current system time in native time unit (nanoseconds)"
+    it("delegates to :os.system_time/0", () => {
+      const beforeNs = Erlang_Os["system_time/0"]();
+      const result = system_time();
+      const afterNs = Erlang_Os["system_time/0"]();
+
+      assert.isTrue(Type.isInteger(result));
+      assert.isAtLeast(result.value, beforeNs.value);
+      assert.isAtMost(result.value, afterNs.value);
+    });
+  });
+
+  // Simplified tests since JS port delegates to :os.system_time/1
+  describe("system_time/1", () => {
+    const system_time = Erlang["system_time/1"];
+
+    // Note: Elixir test is named "returns current system time in the given time unit"
+    it("delegates to :os.system_time/1", () => {
+      const unit = Type.atom("microsecond");
+      const beforeUs = Erlang_Os["system_time/1"](unit);
+      const result = system_time(unit);
+      const afterUs = Erlang_Os["system_time/1"](unit);
+
+      assert.isTrue(Type.isInteger(result));
+      assert.isAtLeast(result.value, beforeUs.value);
+      assert.isAtMost(result.value, afterUs.value);
+    });
+  });
+
   describe("tl/1", () => {
     const tl = Erlang["tl/1"];
 
@@ -6042,6 +8686,80 @@ describe("Erlang", () => {
     });
   });
 
+  // describe("time_offset/0", () => {
+  //   const time_offset = Erlang["time_offset/0"];
+
+  //   it("delegates to time_offset/1 with :native", () => {
+  //     const result = time_offset();
+  //     assert.deepStrictEqual(
+  //       result,
+  //       Erlang["time_offset/1"](Type.atom("native")),
+  //     );
+  //   });
+  // });
+
+  // describe("time_offset/1", () => {
+  //   const time_offset = Erlang["time_offset/1"];
+
+  //   it("all allowed units return integer", () => {
+  //     const units = [
+  //       "native",
+  //       "second",
+  //       "millisecond",
+  //       "microsecond",
+  //       "nanosecond",
+  //     ];
+  //     for (const u of units) {
+  //       assert.isTrue(Type.isInteger(time_offset(Type.atom(u))));
+  //     }
+  //   });
+
+  //   it("coarser units yield smaller absolute values", () => {
+  //     // Each call is independent; only check magnitudes.
+  //     const nano = Math.abs(Number(time_offset(Type.atom("nanosecond")).value));
+  //     const sec = Math.abs(Number(time_offset(Type.atom("second")).value));
+  //     if (nano > 1_000_000_000) assert.isBelow(sec, nano);
+  //   });
+
+  //   it("drifts slowly between two calls", async () => {
+  //     const t1 = Number(time_offset(Type.atom("nanosecond")).value);
+  //     await new Promise((r) => setTimeout(r, 100));
+  //     const t2 = Number(time_offset(Type.atom("nanosecond")).value);
+  //     const drift = Math.abs(t2 - t1);
+  //     // allow ±50 ms for NTP jitter in CI
+  //     assert.isAtMost(drift, 50_000_000);
+  //   });
+
+  //   it("with positive integer unit", () => {
+  //     const result = time_offset(Type.integer(1000n));
+  //     assert.isTrue(Type.isInteger(result));
+  //   });
+
+  //   it("raises ArgumentError when unit is less than 1", () => {
+  //     assertBoxedError(
+  //       () => time_offset(Type.integer(0n)),
+  //       "ArgumentError",
+  //       Interpreter.buildArgumentErrorMsg(1, "invalid time unit"),
+  //     );
+  //   });
+
+  //   it("raises ArgumentError when unit is negative", () => {
+  //     assertBoxedError(
+  //       () => time_offset(Type.integer(-1n)),
+  //       "ArgumentError",
+  //       Interpreter.buildArgumentErrorMsg(1, "invalid time unit"),
+  //     );
+  //   });
+
+  //   it("raises ArgumentError when unit is not a valid time unit atom", () => {
+  //     assertBoxedError(
+  //       () => time_offset(Type.atom("invalid")),
+  //       "ArgumentError",
+  //       Interpreter.buildArgumentErrorMsg(1, "invalid time unit"),
+  //     );
+  //   });
+  // });
+
   describe("trunc/1", () => {
     const testedFun = Erlang["trunc/1"];
 
@@ -6097,9 +8815,9 @@ describe("Erlang", () => {
 
     it("demonstrates floating-point precision limits for large numbers", () => {
       // eslint-disable-next-line no-loss-of-precision
-      const result = testedFun(Type.float(36028797018963969.0));
+      const result = testedFun(Type.float(36_028_797_018_963_969.0));
 
-      const expected = Type.integer(36028797018963968n);
+      const expected = Type.integer(36_028_797_018_963_968n);
 
       assert.deepStrictEqual(result, expected);
     });
@@ -6109,6 +8827,32 @@ describe("Erlang", () => {
         () => testedFun(Type.atom("abc")),
         "ArgumentError",
         Interpreter.buildArgumentErrorMsg(1, "not a number"),
+      );
+    });
+  });
+
+  describe("tuple_size/1", () => {
+    const tuple_size = Erlang["tuple_size/1"];
+
+    it("returns the number of elements in the tuple", () => {
+      const tuple = Type.tuple([
+        Type.integer(1),
+        Type.integer(2),
+        Type.integer(3),
+      ]);
+
+      assert.deepStrictEqual(tuple_size(tuple), Type.integer(3));
+    });
+
+    it("returns 0 for an empty tuple", () => {
+      assert.deepStrictEqual(tuple_size(Type.tuple()), Type.integer(0));
+    });
+
+    it("raises ArgumentError if the argument is not a tuple", () => {
+      assertBoxedError(
+        () => tuple_size(Type.atom("abc")),
+        "ArgumentError",
+        Interpreter.buildArgumentErrorMsg(1, "not a tuple"),
       );
     });
   });
@@ -6154,10 +8898,10 @@ describe("Erlang", () => {
     const unique_integer = Erlang["unique_integer/1"];
 
     it("returns a unique integer each time it is called with empty modifier list", () => {
-      const integer1 = unique_integer(Type.list([]));
+      const integer1 = unique_integer(Type.list());
       assert.isTrue(Type.isInteger(integer1));
 
-      const integer2 = unique_integer(Type.list([]));
+      const integer2 = unique_integer(Type.list());
       assert.isTrue(Type.isInteger(integer2));
 
       assert.isFalse(Interpreter.isEqual(integer1, integer2));

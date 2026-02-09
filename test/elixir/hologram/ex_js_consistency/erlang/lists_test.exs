@@ -9,6 +9,64 @@ defmodule Hologram.ExJsConsistency.Erlang.ListsTest do
 
   @moduletag :consistency
 
+  describe "all/2" do
+    test "returns false if the first item in the list results in false" do
+      assert :lists.all(fn elem -> elem > 1 end, [1, 2, 3, 4]) == false
+    end
+
+    test "returns false if the middle item in the list results in false" do
+      assert :lists.all(fn elem -> elem > 1 end, [5, 4, 1, 2, 3]) == false
+    end
+
+    test "returns false if the last item in the list results in false" do
+      assert :lists.all(fn elem -> elem > 1 end, [5, 4, 3, 2, 1]) == false
+    end
+
+    test "returns true if all items result in true when supplied to the anonymous function" do
+      assert :lists.all(fn elem -> elem > 1 end, [5, 4, 3, 2])
+    end
+
+    test "returns true for empty list" do
+      assert :lists.all(fn elem -> elem > 1 end, [])
+    end
+
+    test "raises FunctionClauseError if the first arg is not an anonymous function" do
+      expected_msg = build_function_clause_error_msg(":lists.all/2", [:not_function, [1, 2, 3]])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.all(:not_function, [1, 2, 3])
+      end
+    end
+
+    test "raises FunctionClauseError if the first arg is an anonymous function with arity different than 1" do
+      fun = fn x, y -> x == y end
+
+      expected_msg =
+        build_function_clause_error_msg(":lists.all/2", [fun, [1, 2, 3]])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.all(fun, [1, 2, 3])
+      end
+    end
+
+    test "raises CaseClauseError if the second argument is not a list" do
+      assert_error CaseClauseError, "no case clause matching: :abc", fn ->
+        :lists.all(fn elem -> elem > 1 end, :abc)
+      end
+    end
+
+    test "raises FunctionClauseError if the second argument is an improper list" do
+      fun = fn elem -> elem > 0 end
+
+      expected_msg =
+        build_function_clause_error_msg(":lists.all_1/2", [fun, 3])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.all(fun, [1, 2 | 3])
+      end
+    end
+  end
+
   describe "any/2" do
     test "returns true if the first item in the list results in true" do
       assert :lists.any(&(&1 > 2), [3, 1, 2, 0])
@@ -63,6 +121,36 @@ defmodule Hologram.ExJsConsistency.Erlang.ListsTest do
 
       assert_error FunctionClauseError, expected_msg, fn ->
         :lists.any(fun, [1, 2 | 3])
+      end
+    end
+  end
+
+  describe "duplicate/2" do
+    test "returns an empty list when N is 0" do
+      assert :lists.duplicate(0, :a) == []
+    end
+
+    test "returns a list with one element when N is 1" do
+      assert :lists.duplicate(1, :a) == [:a]
+    end
+
+    test "returns a list with N copies of the given element" do
+      assert :lists.duplicate(3, :a) == [:a, :a, :a]
+    end
+
+    test "raises FunctionClauseError if the first argument is not an integer" do
+      expected_msg = build_function_clause_error_msg(":lists.duplicate/2", [1.0, :b])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.duplicate(1.0, :b)
+      end
+    end
+
+    test "raises FunctionClauseError if the first argument is a negative integer" do
+      expected_msg = build_function_clause_error_msg(":lists.duplicate/2", [-1, :b])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.duplicate(-1, :b)
       end
     end
   end
@@ -250,6 +338,68 @@ defmodule Hologram.ExJsConsistency.Erlang.ListsTest do
     end
   end
 
+  describe "flatten/2" do
+    test "empty list and empty tail" do
+      assert :lists.flatten([], []) == []
+    end
+
+    test "empty list and non-empty tail" do
+      assert :lists.flatten([], [1, 2, 3]) == [1, 2, 3]
+    end
+
+    test "non-nested list and empty tail" do
+      assert :lists.flatten([1, 2, 3], []) == [1, 2, 3]
+    end
+
+    test "non-nested list and non-empty tail" do
+      assert :lists.flatten([1, 2, 3], [4, 5, 6]) == [1, 2, 3, 4, 5, 6]
+    end
+
+    test "nested list and non-empty tail" do
+      assert :lists.flatten([1, [2, [3, 4]]], [5, 6]) == [1, 2, 3, 4, 5, 6]
+    end
+
+    test "deeply nested empty lists" do
+      assert :lists.flatten([[], [[]]], [1, 2]) == [1, 2]
+    end
+
+    test "improper tail" do
+      assert :lists.flatten([1, 2], [3, 4 | 5]) == [1, 2, 3, 4 | 5]
+    end
+
+    test "raises FunctionClauseError if the first argument is not a list" do
+      expected_msg = build_function_clause_error_msg(":lists.flatten/2", [:abc, [1, 2]])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.flatten(:abc, [1, 2])
+      end
+    end
+
+    test "raises FunctionClauseError if the first argument is an improper list" do
+      expected_msg = build_function_clause_error_msg(":lists.do_flatten/2", [3, [4, 5]])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.flatten([1, 2 | 3], [4, 5])
+      end
+    end
+
+    test "raises FunctionClauseError if the first argument contains a nested improper list" do
+      expected_msg = build_function_clause_error_msg(":lists.do_flatten/2", [4, [5, 6]])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.flatten([1, [2, 3 | 4]], [5, 6])
+      end
+    end
+
+    test "raises FunctionClauseError if the second argument is not a list" do
+      expected_msg = build_function_clause_error_msg(":lists.flatten/2", [[1, 2], :abc])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.flatten([1, 2], :abc)
+      end
+    end
+  end
+
   describe "foldl/3" do
     setup do
       [fun: fn elem, acc -> [elem | acc] end]
@@ -406,6 +556,92 @@ defmodule Hologram.ExJsConsistency.Erlang.ListsTest do
                    fn ->
                      :lists.foldr(fun, [], [1, 2 | 3])
                    end
+    end
+  end
+
+  describe "foreach/2" do
+    setup do
+      [fun: fn x -> x * 2 end]
+    end
+
+    test "returns :ok for an empty list", %{fun: fun} do
+      assert :lists.foreach(fun, []) == :ok
+    end
+
+    test "returns :ok for a non-empty list", %{fun: fun} do
+      assert :lists.foreach(fun, [1, 2, 3]) == :ok
+    end
+
+    test "calls the function for each element in order" do
+      parent = self()
+
+      :lists.foreach(fn x -> send(parent, x) end, [1, 2, 3])
+
+      assert_received 1
+      assert_received 2
+      assert_received 3
+    end
+
+    test "raises FunctionClauseError if the first argument is not an anonymous function" do
+      expected_msg = build_function_clause_error_msg(":lists.foreach/2", [:abc, [1, 2, 3]])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.foreach(:abc, [1, 2, 3])
+      end
+    end
+
+    test "raises FunctionClauseError if the first argument is an anonymous function with arity different than 1" do
+      expected_msg = ~r"""
+      no function clause matching in :lists\.foreach/2
+
+      The following arguments were given to :lists\.foreach/2:
+
+          # 1
+          #Function<[0-9]+\.[0-9]+/2 in Hologram\.ExJsConsistency\.Erlang\.ListsTest\."test foreach/2 raises FunctionClauseError if the first argument is an anonymous function with arity different than 1"/1>
+
+          # 2
+          \[1, 2, 3\]
+      """s
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.foreach(fn x, y -> x + y end, [1, 2, 3])
+      end
+    end
+
+    test "raises FunctionClauseError if the second argument is not a list", %{fun: fun} do
+      expected_msg = ~r"""
+      no function clause matching in :lists\.foreach_1/2
+
+      The following arguments were given to :lists\.foreach_1/2:
+
+          # 1
+          #Function<[0-9]+\.[0-9]+/1 in Hologram\.ExJsConsistency\.Erlang\.ListsTest\.__ex_unit_setup_[0-9]+_0/1>
+
+          # 2
+          :abc
+      """s
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.foreach(fun, :abc)
+      end
+    end
+
+    test "raises FunctionClauseError if the second argument is an improper list", %{fun: fun} do
+      expected_msg = ~r"""
+      no function clause matching in :lists\.foreach_1/2
+
+      The following arguments were given to :lists\.foreach_1/2:
+
+          # 1
+          #Function<[0-9]+\.[0-9]+/1 in Hologram\.ExJsConsistency\.Erlang\.ListsTest\.__ex_unit_setup_[0-9]+_0/1>
+
+          # 2
+          3
+      """s
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.foreach(fun, [1, 2 | 3])
+      end
     end
   end
 
@@ -767,6 +1003,114 @@ defmodule Hologram.ExJsConsistency.Erlang.ListsTest do
       assert_error ArgumentError,
                    build_argument_error_msg(1, "out of range"),
                    fn -> :lists.keysort(1, [{:a}, {}]) end
+    end
+  end
+
+  describe "keystore/4" do
+    test "appends the new tuple if tuples list is empty" do
+      assert :lists.keystore(:c, 1, [], {:x}) == [{:x}]
+    end
+
+    test "single tuple, no match" do
+      assert :lists.keystore(:c, 1, [{:a, 2, 3.0}], {:x}) == [{:a, 2, 3.0}, {:x}]
+    end
+
+    test "single tuple, match at first index" do
+      assert :lists.keystore(:a, 1, [{:a, 2, 3.0}], {:x}) == [{:x}]
+    end
+
+    test "single tuple, match at middle index" do
+      assert :lists.keystore(:b, 2, [{1, :b, 3.0}], {:x}) == [{:x}]
+    end
+
+    test "single tuple, match at last index" do
+      assert :lists.keystore(:c, 3, [{1, 2.0, :c}], {:x}) == [{:x}]
+    end
+
+    test "multiple tuples, no match" do
+      tuples = [{:a, 2, 3.0}, {:d, :e, :f}, {:g, :h, :i}]
+
+      assert :lists.keystore(:c, 1, tuples, {:x}) == [
+               {:a, 2, 3.0},
+               {:d, :e, :f},
+               {:g, :h, :i},
+               {:x}
+             ]
+    end
+
+    test "multiple tuples, match first tuple" do
+      tuples = [{:a, 2, 3.0}, {:d, :e, :f}, {:g, :h, :i}]
+
+      assert :lists.keystore(:a, 1, tuples, {:x}) == [{:x}, {:d, :e, :f}, {:g, :h, :i}]
+    end
+
+    test "multiple tuples, match middle tuple" do
+      tuples = [{:d, :e, :f}, {:a, 2, 3.0}, {:g, :h, :i}]
+
+      assert :lists.keystore(:a, 1, tuples, {:x}) == [{:d, :e, :f}, {:x}, {:g, :h, :i}]
+    end
+
+    test "multiple tuples, match last tuple" do
+      tuples = [{:d, :e, :f}, {:g, :h, :i}, {:a, 2, 3.0}]
+
+      assert :lists.keystore(:a, 1, tuples, {:x}) == [{:d, :e, :f}, {:g, :h, :i}, {:x}]
+    end
+
+    test "skips tuple when its size is smaller than the index" do
+      tuples = [{:a}, {:b, :a, :c}]
+
+      assert :lists.keystore(:a, 2, tuples, {:x}) == [{:a}, {:x}]
+    end
+
+    test "replaces only the first matching tuple" do
+      tuples = [{:a, 1}, {:a, 2}]
+
+      assert :lists.keystore(:a, 1, tuples, {:x}) == [{:x}, {:a, 2}]
+    end
+
+    test "applies non-strict comparison" do
+      assert :lists.keystore(2, 1, [{2.0}], {:x}) == [{:x}]
+    end
+
+    test "raises FunctionClauseError if the second argument (index) is not an integer" do
+      expected_msg = build_function_clause_error_msg(":lists.keystore/4", [:a, 2.0, [], {}])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.keystore(:a, 2.0, [], {})
+      end
+    end
+
+    test "raises FunctionClauseError if the second argument (index) is smaller than 1" do
+      expected_msg = build_function_clause_error_msg(":lists.keystore/4", [:a, 0, [], {}])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.keystore(:a, 0, [], {})
+      end
+    end
+
+    test "raises FunctionClauseError if the third argument (tuples) is not a list" do
+      expected_msg =
+        build_function_clause_error_msg(":lists.keystore2/4", [:a, 1, {{:b}, {:c}}, {}])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.keystore(:a, 1, {{:b}, {:c}}, {})
+      end
+    end
+
+    test "raises FunctionClauseError if the third argument (tuples) is an improper list" do
+      expected_msg = build_function_clause_error_msg(":lists.keystore2/4", [:a, 1, {:d}, {}])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.keystore(:a, 1, [{:b}, {:c} | {:d}], {})
+      end
+    end
+
+    test "raises FunctionClauseError if the fourth argument (newTuple) is not a tuple" do
+      expected_msg = build_function_clause_error_msg(":lists.keystore/4", [:a, 1, [], :x])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.keystore(:a, 1, [], :x)
+      end
     end
   end
 
@@ -1319,6 +1663,130 @@ defmodule Hologram.ExJsConsistency.Erlang.ListsTest do
       assert_error ArgumentError, build_argument_error_msg(1, "not a list"), fn ->
         :lists.reverse(5, [3, 4])
       end
+    end
+  end
+
+  describe "seq/2" do
+    test "delegates to seq/3 with increment = 1" do
+      assert :lists.seq(3, 5) == :lists.seq(3, 5, 1)
+    end
+
+    test "raises FunctionClauseError if the first argument is not an integer" do
+      expected_msg = build_function_clause_error_msg(":lists.seq/2", [:abc, 5])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.seq(:abc, 5)
+      end
+    end
+
+    test "raises FunctionClauseError if the second argument is not an integer" do
+      expected_msg = build_function_clause_error_msg(":lists.seq/2", [1, :abc])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.seq(1, :abc)
+      end
+    end
+
+    test "raises FunctionClauseError when from > to + 1" do
+      expected_msg = build_function_clause_error_msg(":lists.seq/2", [10, 5])
+
+      assert_error FunctionClauseError, expected_msg, fn ->
+        :lists.seq(10, 5)
+      end
+    end
+  end
+
+  describe "seq/3" do
+    test "generates ascending sequence with increment 1" do
+      assert :lists.seq(3, 5, 1) == [3, 4, 5]
+    end
+
+    test "generates ascending sequence with increment 2" do
+      assert :lists.seq(1, 10, 2) == [1, 3, 5, 7, 9]
+    end
+
+    test "generates ascending sequence from negative to positive" do
+      assert :lists.seq(-5, 5, 2) == [-5, -3, -1, 1, 3, 5]
+    end
+
+    test "generates descending sequence with negative increment" do
+      assert :lists.seq(10, 5, -1) == [10, 9, 8, 7, 6, 5]
+    end
+
+    test "generates descending sequence with negative increment of -2" do
+      assert :lists.seq(10, 1, -2) == [10, 8, 6, 4, 2]
+    end
+
+    test "generates descending sequence in negative range" do
+      assert :lists.seq(-1, -10, -2) == [-1, -3, -5, -7, -9]
+    end
+
+    test "generates single element sequence when from equals to" do
+      assert :lists.seq(5, 5, 1) == [5]
+    end
+
+    test "generates single element sequence when from equals to with increment 0" do
+      assert :lists.seq(5, 5, 0) == [5]
+    end
+
+    test "generates empty sequence if from > to with positive increment" do
+      assert :lists.seq(10, 6, 4) == []
+    end
+
+    test "generates empty sequence when from - incr equals to (boundary case)" do
+      assert :lists.seq(3, 2, 1) == []
+    end
+
+    test "generates empty sequence if from < to with negative increment" do
+      assert :lists.seq(6, 7, -1) == []
+    end
+
+    test "raises ArgumentError if the first argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(1, "not an integer"),
+                   fn ->
+                     :lists.seq(:abc, 5, 1)
+                   end
+    end
+
+    test "raises ArgumentError if the second argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(2, "not an integer"),
+                   fn ->
+                     :lists.seq(1, :abc, 1)
+                   end
+    end
+
+    test "raises ArgumentError if the third argument is not an integer" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "not an integer"),
+                   fn ->
+                     :lists.seq(1, 5, :abc)
+                   end
+    end
+
+    test "raises ArgumentError if from > to with positive increment" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "not a negative increment"),
+                   fn ->
+                     :lists.seq(10, 1, 1)
+                   end
+    end
+
+    test "raises ArgumentError if from < to with negative increment" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "not a positive increment"),
+                   fn ->
+                     :lists.seq(1, 10, -1)
+                   end
+    end
+
+    test "raises ArgumentError if increment is 0" do
+      assert_error ArgumentError,
+                   build_argument_error_msg(3, "not a positive increment"),
+                   fn ->
+                     :lists.seq(1, 5, 0)
+                   end
     end
   end
 

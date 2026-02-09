@@ -190,6 +190,7 @@ export default class Interpreter {
     }
 
     if (
+      moduleProxy.__exports__ &&
       !moduleProxy.__exports__.has(functionArityStr) &&
       !Interpreter.isEqual(module, context.module)
     ) {
@@ -407,12 +408,12 @@ export default class Interpreter {
 
   static defineErlangFunction(moduleExName, functionName, arity, jsFunction) {
     const moduleJsName = Interpreter.moduleJsName(moduleExName);
+    const functionArityStr = `${functionName}/${arity}`;
 
-    if (!globalThis[moduleJsName]) {
-      globalThis[moduleJsName] = {};
-    }
+    Interpreter.maybeInitModuleProxy(moduleExName, moduleJsName, "erlang");
 
-    globalThis[moduleJsName][`${functionName}/${arity}`] = jsFunction;
+    globalThis[moduleJsName][functionArityStr] = jsFunction;
+    globalThis[moduleJsName].__exports__.add(functionArityStr);
   }
 
   static defineManuallyPortedFunction(
@@ -440,8 +441,10 @@ export default class Interpreter {
     }
 
     globalThis[moduleJsName][`${functionName}/${arity}`] = () => {
-      // TODO: update the URL
-      const message = `Function :${moduleExName}.${functionName}/${arity} is not yet ported. See what to do here: https://www.hologram.page/TODO`;
+      const message =
+        `Function :${moduleExName}.${functionName}/${arity} is not yet ported.\n` +
+        `  * Check implementation status: https://hologram.page/reference/client-runtime\n` +
+        `  * If the function is not marked 'in progress' and is critical for your project, you may request it here: https://github.com/bartblast/hologram/issues`;
 
       throw new HologramInterpreterError(message);
     };
@@ -660,6 +663,10 @@ export default class Interpreter {
       return right;
     }
 
+    if (Type.isMatchPlaceholder(right)) {
+      return left;
+    }
+
     if (Type.isVariablePattern(left)) {
       return Interpreter.#matchVariablePattern(
         right,
@@ -711,7 +718,11 @@ export default class Interpreter {
     return right;
   }
 
-  static maybeInitModuleProxy(moduleExName, moduleJsName) {
+  static maybeInitModuleProxy(
+    moduleExName,
+    moduleJsName,
+    moduleType = "elixir",
+  ) {
     if (!globalThis[moduleJsName]) {
       const handler = {
         get(target, functionArityStr) {
@@ -732,8 +743,14 @@ export default class Interpreter {
       };
 
       const moduleProxy = new Proxy({}, handler);
+
       globalThis[moduleJsName] = moduleProxy;
-      moduleProxy.__exModule__ = Type.alias(moduleExName);
+
+      moduleProxy.__exModule__ =
+        moduleType === "erlang"
+          ? Type.atom(moduleExName)
+          : Type.alias(moduleExName);
+
       moduleProxy.__exports__ = new Set();
       moduleProxy.__jsName__ = moduleJsName;
     }
