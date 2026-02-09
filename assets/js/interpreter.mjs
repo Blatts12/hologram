@@ -413,7 +413,7 @@ export default class Interpreter {
     Interpreter.maybeInitModuleProxy(moduleExName, moduleJsName, "erlang");
 
     globalThis[moduleJsName][functionArityStr] = jsFunction;
-    globalThis[moduleJsName].__exports__.add(functionArityStr);
+    globalThis[moduleJsName].__exports__?.add(functionArityStr);
   }
 
   static defineManuallyPortedFunction(
@@ -887,20 +887,6 @@ export default class Interpreter {
       // eslint-disable-next-line no-useless-catch
     } catch (error) {
       throw error;
-
-      // TODO: handle errors
-      // eslint-disable-next-line no-unreachable
-      result =
-        Interpreter.#evaluateRescueClauses(rescueClauses, error, context) ||
-        Interpreter.#evaluateCatchClauses(catchClauses, error, context);
-    } finally {
-      // TODO: handle after block
-      if (afterBlock) {
-        // eslint-disable-next-line no-unsafe-finally
-        throw new HologramInterpreterError(
-          '"try" expression after block is not yet implemented in Hologram',
-        );
-      }
     }
 
     if (elseClauses.length === 0) {
