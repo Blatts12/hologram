@@ -80,15 +80,13 @@ function updateDocumentEventListeners(oldVnode, vnode) {
 function parseEvents(events, vnode) {
   if (events && events.clickaway) {
     const handler = (event) => {
-      const path = event.composedPath();
-      console.log(path);
-      console.log(vnode.elm);
-      if (!path.includes(vnode.elm)) {
+      if (!vnode.elm.contains(event.target)) {
         events.clickaway(event, vnode);
       }
     };
 
     events.click = handler;
+    delete events.clickaway;
     return events;
   } else {
     return events;
