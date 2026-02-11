@@ -81,6 +81,8 @@ function parseEvents(events, vnode) {
   if (events && events.clickaway) {
     const handler = (event) => {
       const path = event.composedPath();
+      console.log(path);
+      console.log(vnode.elm);
       if (!path.includes(vnode.elm)) {
         events.clickaway(event, vnode);
       }
