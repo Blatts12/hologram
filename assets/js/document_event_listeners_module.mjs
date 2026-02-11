@@ -89,7 +89,7 @@ function parseEvents(events, vnode) {
     delete events.clickaway;
     return events;
   } else {
-    return events;
+    return {};
   }
 }
 
