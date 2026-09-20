@@ -8102,8 +8102,7 @@ describe("Interpreter", () => {
       });
 
       it("on the right", () => {
-        const expectedVars = {...varsWithEmptyMatchedValues};
-        delete expectedVars.__matched__;
+        const expectedVars = {...varsWithEmptyMatchedValues, __matched__: null};
 
         // fn 2 = _placeholder -> :ok end
         const fun = Type.anonymousFunction(
@@ -8121,7 +8120,7 @@ describe("Interpreter", () => {
               body: (context) => {
                 // Unlike "on the left" which tests matchOperator() directly, this test uses
                 // callAnonymousFunction() which calls updateVarsToMatchedValues() after matching,
-                // deleting __matched__ from context.vars.
+                // nulling __matched__ in context.vars.
                 // Verify no variable was bound from the placeholder.
                 assert.deepStrictEqual(context.vars, expectedVars);
 
@@ -11854,6 +11853,8 @@ describe("Interpreter", () => {
 
     const result = Interpreter.updateVarsToMatchedValues(context);
 
+    // The matched bindings are cleared by being nulled rather than deleted, to keep vars out of
+    // dictionary mode - see updateVarsToMatchedValues.
     const expected = contextFixture({
       vars: {
         a: 11,
@@ -11861,6 +11862,7 @@ describe("Interpreter", () => {
         c: 33,
         d: 4,
         e: 5,
+        __matched__: null,
       },
     });
 
