@@ -122,20 +122,35 @@ export default class Model {
   // Writes into the object it is given and hands it back, because both callers - a row arriving
   // from the server and a row this client wrote - are filing that same object.
   static computeSortKeys(type, attributes) {
-    for (const [name, attributeType] of Object.entries(
-      Model.entry(type).attributes,
-    )) {
-      if (attributeType !== "string") {
-        continue;
-      }
-
+    for (const [name, sortName] of Model.#sortedAttributeNames(type)) {
       const value = attributes[name];
 
-      attributes[`${name}_sort`] =
+      attributes[sortName] =
         value === null || value === undefined ? null : SortKey.compute(value);
     }
 
     return attributes;
+  }
+
+  // The string attributes of a type, each paired with the name its sort key is stored under.
+  //
+  // Which attributes these are is a property of the type rather than of the row, and a fill
+  // computes sort keys for every row of it. Walking the schema per row rebuilt the same list, and
+  // the companion name, ten thousand times over for one fill.
+  //
+  // Derived on first use rather than in entry/1, so a type whose entry carries no attributes
+  // still fails where it used to rather than on the way in. The cache lives on the entry, so
+  // reset/0 drops it along with everything else.
+  static #sortedAttributeNames(type) {
+    const entry = Model.entry(type);
+
+    if (entry.sortedAttributeNames === undefined) {
+      entry.sortedAttributeNames = Object.entries(entry.attributes)
+        .filter(([, attributeType]) => attributeType === "string")
+        .map(([name]) => [name, `${name}_sort`]);
+    }
+
+    return entry.sortedAttributeNames;
   }
 
   // The entity type a boxed struct names, or nothing at all when the value is not a struct -
