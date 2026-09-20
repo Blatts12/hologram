@@ -1461,9 +1461,16 @@ export default class Interpreter {
     }
   }
 
+  // The matched bindings are cleared by being nulled rather than deleted. Deleting a property
+  // moves the object it was on into dictionary mode, and vars is read far more often than it is
+  // cleared - every variable a clause body mentions is a property read on it - so the delete was
+  // paid back over and over by every read that followed it.
+  //
+  // Nothing tests for the property's presence, only for its truthiness (see matchVariablePattern),
+  // so null clears it as completely as a delete did.
   static updateVarsToMatchedValues(context) {
     Object.assign(context.vars, context.vars.__matched__);
-    delete context.vars.__matched__;
+    context.vars.__matched__ = null;
 
     return context;
   }
