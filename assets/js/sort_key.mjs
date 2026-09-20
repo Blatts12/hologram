@@ -65,6 +65,19 @@ export default class SortKey {
   // byte-size prefix that never splits a codepoint.
   static compute(value) {
     const decomposed = value.toLowerCase().normalize("NFD");
+
+    // An ASCII string is already its own stripped and folded form, and capping it is a length
+    // check. Every strip range begins at U+0300 and every foldable letter at U+00DF, so nothing
+    // below U+0080 is touched by either pass, and each of its characters is one UTF-8 byte.
+    //
+    // This is the case worth having: names, titles and slugs are mostly ASCII, and a fill derives
+    // a sort key for every string attribute of every row.
+    if (SortKey.#isAscii(decomposed)) {
+      return decomposed.length <= SortKey.#maxKeyBytes
+        ? decomposed
+        : decomposed.slice(0, SortKey.#maxKeyBytes);
+    }
+
     const stripped = SortKey.#stripCombiningMarks(decomposed);
     const folded = SortKey.#foldLetters(stripped);
 
@@ -105,6 +118,16 @@ export default class SortKey {
     }
 
     return result;
+  }
+
+  static #isAscii(text) {
+    for (let index = 0; index < text.length; index += 1) {
+      if (text.charCodeAt(index) > 0x7f) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   static #isCombiningMark(codepoint) {
