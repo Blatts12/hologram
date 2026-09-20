@@ -1067,13 +1067,23 @@ export default class Renderer {
   // positionally, last one wins. A tag with no spread is left alone, so that duplicate names written
   // literally keep behaving as they did.
   static #expandAttributeSpreads(attrsDom) {
-    const hasSpread = attrsDom.data.some((attrDom) =>
-      Type.isRecordTuple(attrDom, "spread", 2),
-    );
+    // One pass rather than a scan for spreads followed by a flatMap over the same list, and the
+    // pairs are pushed straight onto the result. A spread is the rare case, so the common path was
+    // allocating a one-element array per attribute for flatMap to immediately flatten away.
+    let hasSpread = false;
+    const expanded = [];
 
-    const expanded = attrsDom.data.flatMap((attrDom) =>
-      $.#expandAttribute(attrDom),
-    );
+    for (const attrDom of attrsDom.data) {
+      if (Type.isRecordTuple(attrDom, "spread", 2)) {
+        hasSpread = true;
+
+        for (const pair of $.#expandAttribute(attrDom)) {
+          expanded.push(pair);
+        }
+      } else {
+        expanded.push([Bitstring.toText(attrDom.data[0]), attrDom.data[1]]);
+      }
+    }
 
     return hasSpread ? $.#dedupeAttributes(expanded) : expanded;
   }
