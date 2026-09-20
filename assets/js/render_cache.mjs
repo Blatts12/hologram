@@ -326,8 +326,16 @@ export default class RenderCache {
         return left.value === right.value;
 
       case "bitstring":
+        // Only the text form answers this. `text` is null until something decodes the bytes and
+        // false when they are not valid UTF-8, so the type check is what keeps two different
+        // undecodable bitstrings from both reading as false and comparing equal. The bit count
+        // goes with it: a text bitstring carries no leftover bits, and one that does is never
+        // equal to one that does not.
         return (
-          left.text !== null && right.text !== null && left.text === right.text
+          typeof left.text === "string" &&
+          typeof right.text === "string" &&
+          left.leftoverBitCount === right.leftoverBitCount &&
+          left.text === right.text
         );
 
       default:
