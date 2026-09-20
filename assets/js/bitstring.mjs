@@ -735,6 +735,36 @@ export default class Bitstring {
     return `b${bitstring.leftoverBitCount}${bitstring.hex}`;
   }
 
+  // The key a bitstring takes in a boxed map's hash table. This is not serialize/1: a hash table
+  // key never leaves the client, so it only has to tell unequal bitstrings apart, while
+  // serialize/1 writes the wire form Hologram.Runtime.Deserializer reads.
+  //
+  // That freedom buys a byte-aligned binary its own text as its key. Resolving the hex costs a
+  // UTF-8 encode and a string of two characters per byte, and a binary is what nearly every map
+  // key in a render is - a prop name, a var name, a context key.
+  //
+  // The two forms cannot collide: the hex form's second character is the leftover bit count, a
+  // digit, and the text form's is "t". Equal bitstrings have to key equal whichever side they
+  // were built from, so a byte-built one resolves its text here rather than taking the hex path,
+  // and bytes that are not valid UTF-8 have no text to key by and fall through.
+  static toMapKey(bitstring) {
+    if ($.isEmpty(bitstring)) {
+      return "b";
+    }
+
+    if (bitstring.leftoverBitCount === 0) {
+      $.maybeSetTextFromBytes(bitstring);
+
+      if (bitstring.text !== false) {
+        return `bt${bitstring.text}`;
+      }
+    }
+
+    $.maybeResolveHex(bitstring);
+
+    return `b${bitstring.leftoverBitCount}${bitstring.hex}`;
+  }
+
   static takeChunk(bitstring, chunkOffset, chunkSize) {
     const bitstringBitCount = $.calculateBitCount(bitstring);
 

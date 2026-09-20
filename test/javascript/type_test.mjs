@@ -6,6 +6,7 @@ import {
   defineRuntimeGlobals,
 } from "./support/helpers.mjs";
 
+import Bitstring from "../../assets/js/bitstring.mjs";
 import ERTS from "../../assets/js/erts.mjs";
 import HologramInterpreterError from "../../assets/js/errors/interpreter_error.mjs";
 import NodeTable from "../../assets/js/erts/node_table.mjs";
@@ -482,7 +483,15 @@ describe("Type", () => {
       const bitstring = Type.bitstring("Hologram");
       const result = Type.encodeMapKey(bitstring);
 
-      assert.equal(result, "b0486f6c6f6772616d");
+      assert.equal(result, "btHologram");
+    });
+
+    it("encodes a byte-built bitstring the same as the text it holds", () => {
+      const fromBytes = Bitstring.fromBytes([
+        72, 111, 108, 111, 103, 114, 97, 109,
+      ]);
+
+      assert.equal(Type.encodeMapKey(fromBytes), "btHologram");
     });
 
     it("encodes boxed float value as map key", () => {
