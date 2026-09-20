@@ -162,6 +162,13 @@ export default class LocalDatabase {
   }
 
   static unmarkCarried(type, id) {
+    // Nothing carried means nothing to unmark, and building the key to find that out costs a
+    // string per row. A stream fill is the case: it files every row it carries through here, and
+    // the carried set is empty for all of them.
+    if (LocalDatabase.#carried.size === 0) {
+      return;
+    }
+
     LocalDatabase.#carried.delete(`${type}${SEPARATOR}${id}`);
   }
 
