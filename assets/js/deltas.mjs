@@ -148,11 +148,17 @@ export default class Deltas {
   static #fileRow(type, row) {
     const relationships = Model.relationships(type);
     const attributes = {};
-    const facts = [];
 
-    for (const [key, value] of Object.entries(row)) {
+    // Keys rather than entries, and the facts list only once there is a fact to put in it. A fill
+    // files every row it carries, so a pair array per key and an empty array per row are paid ten
+    // thousand times over for a frame that mostly holds plain attributes.
+    let facts = null;
+
+    for (const key of Object.keys(row)) {
+      const value = row[key];
+
       if (relationships[key]?.toMany) {
-        facts.push([key, value]);
+        (facts ??= []).push([key, value]);
       } else {
         attributes[key] = value;
       }
@@ -160,6 +166,10 @@ export default class Deltas {
 
     Model.computeSortKeys(type, attributes);
     LocalDatabase.putRow(type, attributes);
+
+    if (facts === null) {
+      return;
+    }
 
     // The whole target set of the relationship as it now stands, which is what a row states
     // about one: pairs it no longer names are pairs it no longer has.
