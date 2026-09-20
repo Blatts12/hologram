@@ -152,6 +152,11 @@ export default class Renderer {
   // this.
   static reachBindings = [];
 
+  // input type -> a detached input of that type, used to ask the browser what it would store for a
+  // value before that value is written to an element on screen. Bounded by the number of input
+  // types there are.
+  static #formInputValueProbes = new Map();
+
   // Deferred resize-observer bindings collected during the current render, each a {vnode, handler}.
   // An element's observer target is its live DOM node, which Snabbdom sets on the vnode only during
   // patch, so the binding is held here until resolveResizeBindings turns it into a registry binding
@@ -2252,13 +2257,53 @@ export default class Renderer {
     element.checked = newChecked;
   }
 
+  // Writes the controlled value onto the element, unless the element already holds it.
+  //
+  // What the element holds is what the browser made of the last value written, which is not
+  // always that value: an input of some types rewrites what it is given. <input type="color"> is
+  // the one that shows why it matters - it lowercases its hex, so a state holding "#FF0000" never
+  // compares equal to the "#ff0000" read back off the element, and every render writes the value
+  // again. Those writes land on an element the user may be dragging, and the picker ends up
+  // fighting the pointer.
+  //
+  // So the comparison is between what the browser would store for the new value and what it
+  // stores now, rather than between the new value and what it stores now.
   static #updateFormInputValue(element, newValue) {
     // Skip redundant DOM writes
     if (newValue === element.value) {
       return;
     }
 
+    if ($.#normalizeFormInputValue(element, newValue) === element.value) {
+      return;
+    }
+
     element.value = newValue;
+  }
+
+  // What the browser would store if the given value were written to this element, worked out on a
+  // detached element of the same type so that nothing on screen is touched.
+  //
+  // Only an input is probed. A select normalizes against its own option list, which a probe does
+  // not have, and a textarea does not normalize at all - for both, the value stands for itself.
+  static #normalizeFormInputValue(element, value) {
+    if (element.tagName !== "INPUT") {
+      return value;
+    }
+
+    const type = element.type;
+
+    let probe = $.#formInputValueProbes.get(type);
+
+    if (probe === undefined) {
+      probe = document.createElement("input");
+      probe.type = type;
+      $.#formInputValueProbes.set(type, probe);
+    }
+
+    probe.value = value;
+
+    return probe.value;
   }
 
   // A component module is recognized by its __props__/0 function, which the compiler bundles for
