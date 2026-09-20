@@ -108,9 +108,19 @@ export default class SortKey {
   }
 
   static #isCombiningMark(codepoint) {
-    return SortKey.#combiningMarkRanges.some(
-      ([first, last]) => codepoint >= first && codepoint <= last,
-    );
+    // Every pinned range lies between these two bounds, so anything outside them is settled
+    // without walking the list at all.
+    if (codepoint < 0x0300 || codepoint > 0xfe2f) {
+      return false;
+    }
+
+    for (const [first, last] of SortKey.#combiningMarkRanges) {
+      if (codepoint >= first && codepoint <= last) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   static #stripCombiningMarks(text) {
