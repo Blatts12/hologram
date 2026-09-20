@@ -18,6 +18,7 @@ import ManuallyPortedElixirHologramQuery from "./elixir/hologram/query.mjs";
 import Model from "./model.mjs";
 import Once from "./once.mjs";
 import QueryKernel from "./query_kernel.mjs";
+import RenderCache from "./render_cache.mjs";
 import Throttler from "./throttler.mjs";
 import Type from "./type.mjs";
 import Utils from "./utils.mjs";
@@ -299,26 +300,38 @@ export default class Renderer {
     Renderer.reachBindings = [];
     Renderer.resizeBindings = [];
 
-    const pageModuleProxy = Interpreter.moduleProxy(pageModule);
+    // Component memoization runs for a page render and nowhere else. renderDom and renderTree are
+    // reached on their own - by a test, and by a navigation handing over a tree the server already
+    // evaluated - and neither is a render of the page the cache describes.
+    //
+    // The epoch is what ties the entries to a page: a navigation or a restore moves it, and the
+    // entries of the page being left are dropped rather than adopted onto the new one.
+    RenderCache.beginPass(Hologram.registryEpoch);
 
-    const cid = Type.bitstring("page");
+    try {
+      const pageModuleProxy = Interpreter.moduleProxy(pageModule);
 
-    // A page's params are its props, and it is re-rendered on every action like everything else,
-    // so they are rewritten here for the same reason a component's are.
-    ComponentRegistry.putComponentProps(cid, pageParams);
+      const cid = Type.bitstring("page");
 
-    const pageComponentStruct = ComponentRegistry.getComponentStruct(cid);
+      // A page's params are its props, and it is re-rendered on every action like everything else,
+      // so they are rewritten here for the same reason a component's are.
+      ComponentRegistry.putComponentProps(cid, pageParams);
 
-    // The document's own children, the one children list with no element to own it.
-    const pageVdom = Vdom.finalizeChildren(
-      Renderer.#renderPageInsideLayout(
-        pageModuleProxy,
-        pageParams,
-        pageComponentStruct,
-      ),
-    );
+      const pageComponentStruct = ComponentRegistry.getComponentStruct(cid);
 
-    return Renderer.#pageVnodeFromChildren(pageVdom);
+      // The document's own children, the one children list with no element to own it.
+      const pageVdom = Vdom.finalizeChildren(
+        Renderer.#renderPageInsideLayout(
+          pageModuleProxy,
+          pageParams,
+          pageComponentStruct,
+        ),
+      );
+
+      return Renderer.#pageVnodeFromChildren(pageVdom);
+    } finally {
+      RenderCache.endPass();
+    }
   }
 
   // Based on the tree Renderer.render_tree/3 evaluates on the server, converted to the vnodes a
@@ -477,6 +490,27 @@ export default class Renderer {
     return Type.isTrue(
       Erlang_Maps["is_key/2"](Type.atom("allow_default"), modifiersDom),
     );
+  }
+
+  // Where each of this render's binding lists has got to, taken before a component subtree is
+  // rendered so that what the subtree adds can be told apart afterwards.
+  static #bindingCounts() {
+    return {
+      listeners: $.listenerBindings.length,
+      reach: $.reachBindings.length,
+      resize: $.resizeBindings.length,
+    };
+  }
+
+  // The bindings collected since the given point: what one component subtree contributed to this
+  // render. A cache entry keeps these so a later render that skips the subtree can put them back -
+  // see #replayBindings.
+  static #bindingsSince(counts) {
+    return {
+      listeners: $.listenerBindings.slice(counts.listeners),
+      reach: $.reachBindings.slice(counts.reach),
+      resize: $.resizeBindings.slice(counts.resize),
+    };
   }
 
   // Builds one event binding from a "$"-prefixed attribute, shared by element and window bindings.
@@ -1353,6 +1387,19 @@ export default class Renderer {
     return "atom(cid)" in props.data;
   }
 
+  // Whether any of the module's props is resolved from a query. A property of the module rather
+  // than of the render, so it is derived once and kept on the module proxy the way __props__
+  // already is - it is asked for every component of every render.
+  static #hasQueryProps(moduleProxy) {
+    if (!("__hasQueryProps__" in moduleProxy)) {
+      moduleProxy.__hasQueryProps__ = Renderer.#getPropDefinitions(
+        moduleProxy,
+      ).data.some((prop) => Renderer.#fromQueryCapture(prop.data[2]) !== null);
+    }
+
+    return moduleProxy.__hasQueryProps__;
+  }
+
   // Based on inject_default_prop_values/2
   // Deps: [:lists.keyfind/3, :lists.keymember/3, :maps.is_key/2]
   static #injectDefaultPropValues(props, moduleProxy) {
@@ -1838,6 +1885,17 @@ export default class Renderer {
     const propsDom = dom.data[2];
     let childrenDom = dom.data[3];
 
+    // A prop resolved from a query is read out of the local database at render time, so this
+    // component's output can change while everything a cache entry is keyed on stays the same. It
+    // is not cached, and neither is any component it is rendered inside of - an enclosing entry
+    // would stand in for this component too, and the query would stop running.
+    //
+    // The generation of the local database's writes belongs in the key, which is what would make
+    // such a component cacheable. Until then this is the honest answer.
+    if (RenderCache.isActive && Renderer.#hasQueryProps(moduleProxy)) {
+      RenderCache.poison();
+    }
+
     const expandedChildrenDom = Renderer.#expandSlots(childrenDom, slots);
 
     let props = Renderer.#injectPropsFromContext(
@@ -2293,6 +2351,17 @@ export default class Renderer {
   }
 
   // Based on render_stateful_component/4
+  //
+  // This is where a subtree is skipped. Everything the render below reads is settled by the time
+  // the lookup happens - the module, the merged vars, the merged context, the children and the
+  // parent tag name - so an entry keyed on those describes this render's output as well as the
+  // render that produced it. The component's own cid is the defaultTarget passed down, and it is a
+  // prop, so vars covers it too.
+  //
+  // What the key cannot answer for is handled around it: a descendant's own state by the dirty set
+  // the entry is checked against, and a prop read from a query by #renderComponent taking such a
+  // component, and everything it renders inside of, out of the cache entirely.
+  //
   // Deps: [:maps.get/2, :maps.merge/2]
   static #renderStatefulComponent(
     moduleProxy,
@@ -2307,26 +2376,69 @@ export default class Renderer {
     const [componentState, componentEmittedContext] =
       Renderer.#maybeInitComponent(cid, moduleProxy, props);
 
-    // Rewritten on every render rather than only at init, so a handler reading a prop gets the
-    // value the latest render used rather than one taken when the component mounted. Runs after
-    // #maybeInitComponent, which is what creates the registry entry on a first render.
-    ComponentRegistry.putComponentProps(cid, props);
-
     const vars = Erlang_Maps["merge/2"](props, componentState);
     const mergedContext = Erlang_Maps["merge/2"](
       context,
       componentEmittedContext,
     );
 
-    return Renderer.#renderTemplate(
-      moduleProxy,
-      vars,
-      childrenDom,
-      mergedContext,
-      cid,
-      parentTagName,
-      parentModule,
+    const cidKey = RenderCache.isActive ? Type.encodeMapKey(cid) : null;
+
+    const key = {
+      childrenDom: childrenDom,
+      context: mergedContext,
+      moduleProxy: moduleProxy,
+      parentTagName: parentTagName,
+      vars: vars,
+    };
+
+    const entry = cidKey === null ? null : RenderCache.hit(cidKey, key);
+
+    if (entry !== null) {
+      // The registry's props are NOT rewritten here, and they do not need to be: props are part of
+      // what the entry was matched on, so the props already written there hold the same value under
+      // every name. They are a different object, which nothing reading them can tell - a term is
+      // immutable, and a handler asks what a prop says, never which object said it.
+      Renderer.#replayBindings(entry.bindings);
+      RenderCache.replay(cidKey, entry);
+
+      return entry.vdom;
+    }
+
+    // Rewritten on every render rather than only at init, so a handler reading a prop gets the
+    // value the latest render used rather than one taken when the component mounted. Runs after
+    // #maybeInitComponent, which is what creates the registry entry on a first render.
+    ComponentRegistry.putComponentProps(cid, props);
+
+    const frame = RenderCache.enter(
+      cidKey,
+      !Renderer.#hasQueryProps(moduleProxy),
+      Renderer.#bindingCounts(),
     );
+
+    try {
+      const vdom = Renderer.#renderTemplate(
+        moduleProxy,
+        vars,
+        childrenDom,
+        mergedContext,
+        cid,
+        parentTagName,
+        parentModule,
+      );
+
+      if (frame !== null) {
+        key.bindings = Renderer.#bindingsSince(frame.bindingCounts);
+        key.vdom = vdom;
+
+        RenderCache.leave(frame, key);
+      }
+
+      return vdom;
+    } catch (error) {
+      RenderCache.abandon(frame);
+      throw error;
+    }
   }
 
   // Based on render_template/4
@@ -2351,6 +2463,35 @@ export default class Renderer {
       moduleProxy.__exModule__,
       parentModule,
     );
+  }
+
+  // Puts a skipped subtree's event bindings back into this render's lists.
+  //
+  // renderPage starts each render with empty lists and the render loop hands what they end up
+  // holding to EventListenerRegistry.reconcile, which tears down every listener no binding asks
+  // for. A subtree that renders nothing contributes nothing, so its <window> and <document>
+  // listeners, its scroll-edge listeners and its resize observers would all be torn down. Putting
+  // the bindings back is what makes a skipped subtree invisible to the reconcile.
+  //
+  // The bindings are the objects the subtree's last render built, handlers included. That is the
+  // same reuse the vnodes themselves get: a handler reads the action spec the template evaluated,
+  // and the template evaluated it from vars the entry was matched on.
+  //
+  // A deferred binding carries the vnode whose element it watches, and that vnode is the cached
+  // one, still holding the element from the patch that put it on screen. The element is still in
+  // the document, since nothing in this subtree changed.
+  static #replayBindings(bindings) {
+    for (const binding of bindings.listeners) {
+      $.listenerBindings.push(binding);
+    }
+
+    for (const binding of bindings.reach) {
+      $.reachBindings.push(binding);
+    }
+
+    for (const binding of bindings.resize) {
+      $.resizeBindings.push(binding);
+    }
   }
 
   // Based on spread_entries/1

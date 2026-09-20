@@ -25,6 +25,7 @@ import LocalDatabase from "./local_database.mjs";
 import MemoryStorage from "./memory_storage.mjs";
 import Dispatch from "./dispatch.mjs";
 import PerformanceTimer from "./performance_timer.mjs";
+import RenderCache from "./render_cache.mjs";
 import Renderer from "./renderer.mjs";
 import Replica from "./replica.mjs";
 import Serializer from "./serializer.mjs";
@@ -591,6 +592,14 @@ export default class Hologram {
       // now that the DOM is patched, so each re-syncs the children it watches and recomputes - firing
       // again as content this render added extends or fills the container.
       EventListeners.recheckScrollEdges();
+    } catch (error) {
+      // A render that raised left the DOM and the virtual document describing different pages, and
+      // the render cache describing a third thing: a subtree whose entry was stored before the
+      // raise names vnodes the patch never put on screen. Dropping the cache costs the next render
+      // its skipping and takes that question away.
+      RenderCache.clear();
+
+      throw error;
     } finally {
       // A template expression is app code and can raise, so the flag is cleared on the way out
       // either way. Leaving it set would silence every dispatch from here on.
@@ -2011,6 +2020,12 @@ export default class Hologram {
     );
 
     ComponentRegistry.putComponentStruct(target, savedComponentStruct);
+
+    // The one place a component's state or emitted context changes between renders, and so the one
+    // place the render cache has to be told. The render below skips a component subtree whose
+    // inputs did not change, and this component's state is an input its enclosing components
+    // cannot see: without this the action would change the registry and change nothing on screen.
+    RenderCache.markDirty(target);
 
     globalThis.Hologram.isProfilingEnabled = false;
 

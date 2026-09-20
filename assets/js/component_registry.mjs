@@ -1,12 +1,17 @@
 "use strict";
 
+import RenderCache from "./render_cache.mjs";
 import Type from "./type.mjs";
 
 export default class ComponentRegistry {
   static entries = Type.map();
 
+  // The render cache describes the components this registry holds, so it goes wherever they go:
+  // an entry whose component is no longer registered cannot be re-rendered, and one whose
+  // component came back with a different struct would be answered from a state nothing here holds.
   static clear() {
     ComponentRegistry.entries = Type.map();
+    RenderCache.clear();
   }
 
   // Optimized (mutates next_action field in-place)
@@ -67,8 +72,11 @@ export default class ComponentRegistry {
     return Type.isTrue(Erlang_Maps["is_key/2"](cid, ComponentRegistry.entries));
   }
 
+  // See clear/0 on why the render cache is dropped here as well: this swaps every struct at once,
+  // for a page the entries do not describe.
   static populate(entries) {
     ComponentRegistry.entries = entries;
+    RenderCache.clear();
   }
 
   // Optimized (mutates props field in-place)
