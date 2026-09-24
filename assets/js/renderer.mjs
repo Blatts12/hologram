@@ -716,15 +716,25 @@ export default class Renderer {
     return LocalDatabase.syncCounts[key] ?? null;
   }
 
+  //
+  // Filtering, evaluating and naming happen in one pass. As a chain of three they built an array
+  // and a tuple per prop at each step, and from_list/1 then re-checked every pair it was handed.
   static #castProps(propsDom, moduleProxy) {
-    const propsTuples = Renderer.#filterAllowedProps(
-      Renderer.#expandPropSpreads(propsDom),
-      moduleProxy,
-    )
-      .map((propDom) => Renderer.#evalutatePropValue(propDom))
-      .map((propDom) => Renderer.#normalizePropName(propDom));
+    const allowedPropNames = Renderer.#getAllowedPropNames(moduleProxy);
+    const props = [];
 
-    return Erlang_Maps["from_list/1"](Type.list(propsTuples));
+    for (const propDom of Renderer.#expandPropSpreads(propsDom)) {
+      const name = Bitstring.toText(propDom.data[0]);
+
+      if (allowedPropNames.has(name)) {
+        props.push([
+          Renderer.#normalizePropName(name),
+          Renderer.#evalutatePropValue(propDom.data[1]),
+        ]);
+      }
+    }
+
+    return Type.map(props);
   }
 
   // Records each $click_outside attribute on the element as a document-level "click" binding: it
@@ -910,6 +920,36 @@ export default class Renderer {
     const segment = $.#validateSpreadKey($.toText(key)).replaceAll("_", "-");
 
     return namePrefix === null ? segment : `${namePrefix}-${segment}`;
+  }
+
+  // Whether a <slot> sits anywhere #expandSlots would look, which decides if it has anything to do.
+  // It nearly never does, and expanding rebuilds every node on the way down and flattens the result.
+  //
+  // Skipping it when there is no slot renders the same vnodes: the flatten only lifts nested node
+  // lists, and #renderNodes splices those into their parent's children as it goes.
+  static #containsSlot(dom) {
+    if (Type.isList(dom)) {
+      return dom.data.some((node) => Renderer.#containsSlot(node));
+    }
+
+    if (!Type.isTuple(dom)) {
+      return false;
+    }
+
+    switch (dom.data[0].value) {
+      case "element":
+        return (
+          Bitstring.toText(dom.data[1]) === "slot" ||
+          Renderer.#containsSlot(dom.data[3])
+        );
+
+      case "component":
+      case "dynamic_tag":
+        return Renderer.#containsSlot(dom.data[3]);
+
+      default:
+        return false;
+    }
   }
 
   static #contextKey(opts) {
@@ -1231,27 +1271,22 @@ export default class Renderer {
   }
 
   // Based on evaluate_prop_value/2
-  static #evalutatePropValue(propDom) {
-    const [name, valueDom] = propDom.data;
-    let evaluatedValue;
-
+  // Takes the value half of a prop and returns the evaluated value, since the one caller pairs it
+  // with the name itself.
+  static #evalutatePropValue(valueDom) {
+    // A value part is tagged with a bare :text or :expression atom, so the tag's name answers it.
     if (
       valueDom.data.length === 1 &&
-      Interpreter.isStrictlyEqual(
-        valueDom.data[0].data[0],
-        Type.atom("expression"),
-      )
+      valueDom.data[0].data[0].value === "expression"
     ) {
       if (valueDom.data[0].data[1].data.length === 1) {
-        evaluatedValue = valueDom.data[0].data[1].data[0];
-      } else {
-        evaluatedValue = valueDom.data[0].data[1];
+        return valueDom.data[0].data[1].data[0];
       }
-    } else {
-      evaluatedValue = Renderer.valueDomToBitstring(valueDom);
+
+      return valueDom.data[0].data[1];
     }
 
-    return Type.tuple([name, evaluatedValue]);
+    return Renderer.valueDomToBitstring(valueDom);
   }
 
   static #evaluateTemplate(moduleProxy, vars) {
@@ -1273,22 +1308,6 @@ export default class Renderer {
 
     return keyFilters.data.every((keyFilter) =>
       KeyboardEvent.matchesKeyFilter(keyFilter, event),
-    );
-  }
-
-  // Based on filter_allowed_props/2
-  // Takes an array of prop tuples, as returned by #expandPropSpreads().
-  //
-  // A from_query prop is not a prop a template may set, the way a from_context one is not: both
-  // are resolved from a source of their own. Today the query stage overwrites whatever a template
-  // passed anyway, so refusing it here changes no resolved value - it is the admission rule that
-  // is kept identical to the server's, and it stops being redundant the moment a query prop can
-  // answer from somewhere other than a fresh run.
-  static #filterAllowedProps(propDoms, moduleProxy) {
-    const allowedPropNames = Renderer.#getAllowedPropNames(moduleProxy);
-
-    return propDoms.filter((propDom) =>
-      allowedPropNames.has(Bitstring.toText(propDom.data[0])),
     );
   }
 
@@ -1379,9 +1398,17 @@ export default class Renderer {
     return moduleProxy.__constrainedProps__;
   }
 
+  // Based on filter_allowed_props/2
+  //
   // The names a component accepts as props. A property of the module rather than of the render, so
   // it is derived once and kept on the module proxy the way __props__ already is - every component
   // of every render filters its props through it.
+  //
+  // A from_query prop is not a prop a template may set, the way a from_context one is not: both
+  // are resolved from a source of their own. Today the query stage overwrites whatever a template
+  // passed anyway, so refusing it here changes no resolved value - it is the admission rule that
+  // is kept identical to the server's, and it stops being redundant the moment a query prop can
+  // answer from somewhere other than a fresh run.
   //
   // A Set of plain text rather than a list of bitstrings: the filter asked every incoming prop
   // against every declared one, which is the product of the two for a component that takes more
@@ -1405,6 +1432,57 @@ export default class Renderer {
     return moduleProxy.__allowedPropNames__;
   }
 
+  // The props a component takes from context, each with the context key it reads, derived once
+  // per module like __allowedPropNames__. Most components take none, which makes context injection
+  // a length check.
+  static #getContextProps(moduleProxy) {
+    if (!("__contextProps__" in moduleProxy)) {
+      moduleProxy.__contextProps__ = [];
+
+      for (const prop of Renderer.#getPropDefinitions(moduleProxy).data) {
+        const contextKey = Renderer.#contextKey(prop.data[2]);
+
+        if (contextKey !== null) {
+          moduleProxy.__contextProps__.push({
+            name: prop.data[0],
+            mapKey: Type.encodeMapKey(prop.data[0]),
+            contextMapKey: Type.encodeMapKey(contextKey),
+          });
+        }
+      }
+    }
+
+    return moduleProxy.__contextProps__;
+  }
+
+  // The props a component declares a default for, each with its default value, derived once per
+  // module like __allowedPropNames__. The value is the term the definition holds, so it is the same
+  // object on every render, which is what lets the render cache compare it by identity.
+  // Deps: [:lists.keyfind/3]
+  static #getDefaultProps(moduleProxy) {
+    if (!("__defaultProps__" in moduleProxy)) {
+      moduleProxy.__defaultProps__ = [];
+
+      for (const prop of Renderer.#getPropDefinitions(moduleProxy).data) {
+        const defaultEntry = Erlang_Lists["keyfind/3"](
+          Type.atom("default"),
+          Type.integer(1),
+          prop.data[2],
+        );
+
+        if (!Type.isFalse(defaultEntry)) {
+          moduleProxy.__defaultProps__.push({
+            name: prop.data[0],
+            mapKey: Type.encodeMapKey(prop.data[0]),
+            value: defaultEntry.data[1],
+          });
+        }
+      }
+    }
+
+    return moduleProxy.__defaultProps__;
+  }
+
   static #getPropDefinitions(moduleProxy) {
     if (!("__props__" in moduleProxy)) {
       moduleProxy.__props__ = moduleProxy["__props__/0"]();
@@ -1416,6 +1494,17 @@ export default class Renderer {
   // Based on has_cid_prop?/1
   static #hasCidProp(props) {
     return "atom(cid)" in props.data;
+  }
+
+  // Whether any attribute binds an event. Most elements bind none, since the $key the compiler
+  // appends to nearly every element binds nothing. For those, the listener map and the three
+  // binding collectors are skipped rather than each walking the attributes to find nothing.
+  static #hasEventBindings(attrsDom) {
+    return attrsDom.data.some((attrDom) => {
+      const name = $.#eventAttributeName(attrDom);
+
+      return name !== null && name.startsWith("$") && name !== "$key";
+    });
   }
 
   // Whether any of the module's props is resolved from a query. A property of the module rather
@@ -1432,62 +1521,38 @@ export default class Renderer {
   }
 
   // Based on inject_default_prop_values/2
-  // Deps: [:lists.keyfind/3, :lists.keymember/3, :maps.is_key/2]
+  //
+  // Optimized (mutates map): props is the map #castProps built for this render and nothing else
+  // holds it yet.
   static #injectDefaultPropValues(props, moduleProxy) {
-    return Renderer.#getPropDefinitions(moduleProxy).data.reduce(
-      (acc, prop) => {
-        if (
-          Type.isFalse(Erlang_Maps["is_key/2"](prop.data[0], acc)) &&
-          Type.isTrue(
-            Erlang_Lists["keymember/3"](
-              Type.atom("default"),
-              Type.integer(1),
-              prop.data[2],
-            ),
-          )
-        ) {
-          // Optimized (mutates map)
-          acc.data[Type.encodeMapKey(prop.data[0])] = [
-            prop.data[0],
-            Erlang_Lists["keyfind/3"](
-              Type.atom("default"),
-              Type.integer(1),
-              prop.data[2],
-            ).data[1],
-          ];
-        }
+    for (const {name, mapKey, value} of Renderer.#getDefaultProps(
+      moduleProxy,
+    )) {
+      if (!(mapKey in props.data)) {
+        props.data[mapKey] = [name, value];
+      }
+    }
 
-        return acc;
-      },
-      Utils.shallowCloneObject(props),
-    );
+    return props;
   }
 
   // Based on inject_props_from_context/3
-  // Deps: [:maps.from_list/1, :maps.get/2, :maps.is_key/2, :maps.merge/2]
+  //
+  // Optimized (mutates map): propsFromTemplate is the map #castProps built for this render and
+  // nothing else holds it yet. Writing into it is what merge/2 would produce: a context value
+  // replaces a template one, and a new name joins at the end.
   static #injectPropsFromContext(propsFromTemplate, moduleProxy, context) {
-    const propsFromContextTuples = Renderer.#getPropDefinitions(moduleProxy)
-      .data.filter((prop) => {
-        const contextKey = Renderer.#contextKey(prop.data[2]);
-        return (
-          contextKey !== null &&
-          Type.isTrue(Erlang_Maps["is_key/2"](contextKey, context))
-        );
-      })
-      .map((prop) => {
-        const contextKey = Renderer.#contextKey(prop.data[2]);
+    for (const {name, mapKey, contextMapKey} of Renderer.#getContextProps(
+      moduleProxy,
+    )) {
+      const contextEntry = context.data[contextMapKey];
 
-        return Type.tuple([
-          prop.data[0],
-          Erlang_Maps["get/2"](contextKey, context),
-        ]);
-      });
+      if (contextEntry !== undefined) {
+        propsFromTemplate.data[mapKey] = [name, contextEntry[1]];
+      }
+    }
 
-    const propsFromContext = Erlang_Maps["from_list/1"](
-      Type.list(propsFromContextTuples),
-    );
-
-    return Erlang_Maps["merge/2"](propsFromTemplate, propsFromContext);
+    return propsFromTemplate;
   }
 
   // Based on run_prop_query!/4
@@ -1529,6 +1594,10 @@ export default class Renderer {
   // these run in cannot change what any of them returns. The build refuses such a binding
   // outright; this is the same rule holding by construction rather than by check.
   static #injectPropsFromQuery(props, moduleProxy, alias) {
+    if (!Renderer.#hasQueryProps(moduleProxy)) {
+      return props;
+    }
+
     return Renderer.#getPropDefinitions(moduleProxy).data.reduce(
       (acc, prop) => {
         const capture = Renderer.#fromQueryCapture(prop.data[2]);
@@ -1684,41 +1753,16 @@ export default class Renderer {
     }
   }
 
-  // WARNING: must match merge_neighbouring_text_nodes/1 on the server: adjacent text nodes join
-  // into one, other nodes pass through.
-  static #mergeNeighbouringTextNodes(nodes) {
-    return nodes.reduce((acc, node) => {
-      // Drop nil render results (e.g. <window>/<document> tags render to nil), otherwise
-      // Snabbdom renders the boxed nil term as a stray "undefined" text node.
-      if (Type.isNil(node)) {
-        return acc;
-      }
-
-      if (
-        typeof node === "string" &&
-        acc.length > 0 &&
-        typeof acc[acc.length - 1] === "string"
-      ) {
-        acc[acc.length - 1] = acc[acc.length - 1] + node;
-      } else {
-        acc.push(node);
-      }
-
-      return acc;
-    }, []);
-  }
-
   static #normalizeEventName(eventName) {
     return eventName.replace(/_/g, "");
   }
 
   // Based on normalize_prop_name/1
-  // Deps: [:erlang.binary_to_atom/1]
-  static #normalizePropName(propDom) {
-    return Type.tuple([
-      Erlang["binary_to_atom/1"](propDom.data[0]),
-      propDom.data[1],
-    ]);
+  // Takes the name as text, which #castProps has already decoded to check it against the allowed
+  // names. An allowed name is a declared prop's, so it is valid UTF-8 and binary_to_atom/1 would
+  // build the same atom.
+  static #normalizePropName(name) {
+    return Type.atom(name);
   }
 
   // Spells a tag name the way the HTML parser would. A name written in a template is spelled by
@@ -1776,6 +1820,26 @@ export default class Renderer {
     return Type.isTrue(
       Erlang_Maps["is_key/2"](Type.atom("prevent_default"), modifiersDom),
     );
+  }
+
+  // Based on merge_neighbouring_text_nodes/1
+  //
+  // WARNING: must match merge_neighbouring_text_nodes/1 on the server: adjacent text nodes join
+  // into one, other nodes pass through.
+  static #pushMergingText(vnodes, node) {
+    // Drop nil render results (e.g. <window>/<document> tags render to nil), otherwise
+    // Snabbdom renders the boxed nil term as a stray "undefined" text node.
+    if (Type.isNil(node)) {
+      return;
+    }
+
+    const lastIndex = vnodes.length - 1;
+
+    if (typeof node === "string" && typeof vnodes[lastIndex] === "string") {
+      vnodes[lastIndex] += node;
+    } else {
+      vnodes.push(node);
+    }
   }
 
   // Based on raise_invalid_spread_value/1
@@ -1838,20 +1902,17 @@ export default class Renderer {
   }
 
   // Based on render_tree_attributes/1
-  // "props" are Snabbdom props, not Hologram component props
-  static #renderAttributesAndProps(attrsDom, tagName) {
+  static #renderAttributes(attrsDom, tagName) {
     const attrs = {};
-    const props = {};
 
     if (attrsDom.data.length === 0) {
-      return {attrs, props};
+      return attrs;
     }
 
-    // Expand spreads into unboxed [name, valueDom] pairs, then filter out event attributes
-    // (starting with $)
-    const regularAttrs = $.#expandAttributeSpreads(attrsDom).filter(
-      ([name]) => !name.startsWith("$"),
-    );
+    // Expand spreads into unboxed [name, valueDom] pairs. Event attributes (starting with $) are
+    // skipped in the loop below rather than filtered out into a second array first. The input type
+    // lookup can read the unfiltered list, since no event attribute is named "type".
+    const expandedAttrs = $.#expandAttributeSpreads(attrsDom);
 
     // Check if this is a form element with special handling of checked and value attributes
     const isFormInput =
@@ -1859,10 +1920,14 @@ export default class Renderer {
 
     let inputType;
     if (isFormInput) {
-      inputType = $.#determineInputType(tagName, regularAttrs);
+      inputType = $.#determineInputType(tagName, expandedAttrs);
     }
 
-    for (const [name, valueDom] of regularAttrs) {
+    for (const [name, valueDom] of expandedAttrs) {
+      if (name.startsWith("$")) {
+        continue;
+      }
+
       // Text-based inputs should have controlled value behavior
       // Radio and checkbox inputs use their value attribute as a regular HTML attribute
       let isControlledCheckedAttr, isControlledValueAttr;
@@ -1900,7 +1965,7 @@ export default class Renderer {
       }
     }
 
-    return {attrs, props};
+    return attrs;
   }
 
   // Based on render_tree/3 (component case)
@@ -1927,7 +1992,9 @@ export default class Renderer {
       RenderCache.poison();
     }
 
-    const expandedChildrenDom = Renderer.#expandSlots(childrenDom, slots);
+    const expandedChildrenDom = Renderer.#containsSlot(childrenDom)
+      ? Renderer.#expandSlots(childrenDom, slots)
+      : childrenDom;
 
     let props = Renderer.#injectPropsFromContext(
       Renderer.#castProps(propsDom, moduleProxy),
@@ -2052,15 +2119,18 @@ export default class Renderer {
 
     const attrsDom = dom.data[2];
 
-    const {attrs: attrsVdom, props: propsVdom} =
-      Renderer.#renderAttributesAndProps(attrsDom, currentTagName);
+    const attrsVdom = Renderer.#renderAttributes(attrsDom, currentTagName);
 
-    const eventListenersVdom = Renderer.#renderEventListeners(
-      attrsDom,
-      currentTagName,
-      attrsVdom,
-      defaultTarget,
-    );
+    const hasEventBindings = Renderer.#hasEventBindings(attrsDom);
+
+    const eventListenersVdom = hasEventBindings
+      ? Renderer.#renderEventListeners(
+          attrsDom,
+          currentTagName,
+          attrsVdom,
+          defaultTarget,
+        )
+      : {};
 
     const childrenDom = dom.data[3];
 
@@ -2079,10 +2149,6 @@ export default class Renderer {
     );
 
     const data = {attrs: attrsVdom, on: eventListenersVdom};
-
-    if (Object.keys(propsVdom).length > 0) {
-      data.props = propsVdom;
-    }
 
     // Handle controlled form inputs (value for text inputs/textareas/selects, checked for checkboxes/radios)
     // Radio/checkbox inputs use regular value attributes and controlled checked attributes
@@ -2147,7 +2213,7 @@ export default class Renderer {
       // Make sure the script is executed if the code changes.
       //
       // The one child is the whole body: everything a script can hold renders to text, and
-      // #mergeNeighbouringTextNodes joins adjacent text into a single child. That is what lets
+      // #pushMergingText joins adjacent text into a single child. That is what lets
       // this equal the textContent Vdom.#resourceKey reads off the live node, which is what the
       // boot patch compares the two sides by. Splitting a script body into more than one child
       // would part the two keys and make the page re-run its own scripts on boot.
@@ -2164,15 +2230,17 @@ export default class Renderer {
 
     const elementVnode = vnode(currentTagName, data, childrenVdom);
 
-    Renderer.#collectClickOutsideBindings(
-      attrsDom,
-      elementVnode,
-      defaultTarget,
-    );
+    if (hasEventBindings) {
+      Renderer.#collectClickOutsideBindings(
+        attrsDom,
+        elementVnode,
+        defaultTarget,
+      );
 
-    Renderer.#collectReachBindings(attrsDom, elementVnode, defaultTarget);
+      Renderer.#collectReachBindings(attrsDom, elementVnode, defaultTarget);
 
-    Renderer.#collectResizeBindings(attrsDom, elementVnode, defaultTarget);
+      Renderer.#collectResizeBindings(attrsDom, elementVnode, defaultTarget);
+    }
 
     return elementVnode;
   }
@@ -2231,23 +2299,36 @@ export default class Renderer {
     parentModule,
     slotsParentModule,
   ) {
-    return Renderer.#mergeNeighbouringTextNodes(
-      nodes.data
-        // There may be nil DOM nodes resulting from "if" blocks, e.g. {%if false}abc{/if} or DOCTYPE
-        .filter((node) => !Type.isNil(node))
-        .map((node) =>
-          Renderer.renderDom(
-            node,
-            context,
-            slots,
-            defaultTarget,
-            parentTagName,
-            parentModule,
-            slotsParentModule,
-          ),
-        )
-        .flat(),
-    );
+    // One loop rather than filter, map, flat and a merging reduce: that chain allocated four arrays
+    // per children list, and this is the most frequently called function of a render.
+    const vnodes = [];
+
+    for (const node of nodes.data) {
+      // There may be nil DOM nodes resulting from "if" blocks, e.g. {%if false}abc{/if} or DOCTYPE
+      if (Type.isNil(node)) {
+        continue;
+      }
+
+      const rendered = Renderer.renderDom(
+        node,
+        context,
+        slots,
+        defaultTarget,
+        parentTagName,
+        parentModule,
+        slotsParentModule,
+      );
+
+      if (Array.isArray(rendered)) {
+        for (const item of rendered) {
+          $.#pushMergingText(vnodes, item);
+        }
+      } else {
+        $.#pushMergingText(vnodes, rendered);
+      }
+    }
+
+    return vnodes;
   }
 
   // Based on render_page_inside_layout/3
@@ -2334,7 +2415,7 @@ export default class Renderer {
   // key here, so it exists only between the two renderers.
   //
   // Read straight off the attributes rather than through expand_attribute_spreads/1, which
-  // #renderAttributesAndProps has already run over the same list: this runs for every element of
+  // #renderAttributes has already run over the same list: this runs for every element of
   // every render, and no spread has to be expanded to find the key. Spread entries are skipped
   // rather than looked into, since a spread carrying a $-prefixed name is refused before it gets
   // here.
