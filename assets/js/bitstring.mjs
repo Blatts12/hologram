@@ -747,6 +747,10 @@ export default class Bitstring {
   // digit, and the text form's is "t". Equal bitstrings have to key equal whichever side they
   // were built from, so a byte-built one resolves its text here rather than taking the hex path,
   // and bytes that are not valid UTF-8 have no text to key by and fall through.
+  //
+  // The text is prefixed with its length. A tuple, list or map key joins its parts' keys with ","
+  // and ":", which hex never contains but text can, so without the length {"a,btb"} and {"a", "b"}
+  // would both key as "tuple(bta,btb)". With it, each part says where it ends.
   static toMapKey(bitstring) {
     if ($.isEmpty(bitstring)) {
       return "b";
@@ -756,7 +760,7 @@ export default class Bitstring {
       $.maybeSetTextFromBytes(bitstring);
 
       if (bitstring.text !== false) {
-        return `bt${bitstring.text}`;
+        return `bt${bitstring.text.length}:${bitstring.text}`;
       }
     }
 

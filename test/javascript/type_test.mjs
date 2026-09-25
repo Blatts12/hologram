@@ -483,7 +483,7 @@ describe("Type", () => {
       const bitstring = Type.bitstring("Hologram");
       const result = Type.encodeMapKey(bitstring);
 
-      assert.equal(result, "btHologram");
+      assert.equal(result, "bt8:Hologram");
     });
 
     it("encodes a byte-built bitstring the same as the text it holds", () => {
@@ -491,7 +491,27 @@ describe("Type", () => {
         72, 111, 108, 111, 103, 114, 97, 109,
       ]);
 
-      assert.equal(Type.encodeMapKey(fromBytes), "btHologram");
+      assert.equal(Type.encodeMapKey(fromBytes), "bt8:Hologram");
+    });
+
+    it("keeps tuple keys apart when a binary's text holds a separator", () => {
+      const joined = Type.tuple([Type.bitstring("a,btb")]);
+      const split = Type.tuple([Type.bitstring("a"), Type.bitstring("b")]);
+
+      assert.notEqual(Type.encodeMapKey(joined), Type.encodeMapKey(split));
+    });
+
+    it("keeps map keys apart when a binary's text holds a separator", () => {
+      const joined = Type.map([
+        [Type.bitstring("a"), Type.bitstring("b,btc:btd")],
+      ]);
+
+      const split = Type.map([
+        [Type.bitstring("a"), Type.bitstring("b")],
+        [Type.bitstring("c"), Type.bitstring("d")],
+      ]);
+
+      assert.notEqual(Type.encodeMapKey(joined), Type.encodeMapKey(split));
     });
 
     it("encodes boxed float value as map key", () => {
