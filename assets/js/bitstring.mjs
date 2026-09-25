@@ -9,6 +9,10 @@ export default class Bitstring {
   static #decoder = ERTS.utf8Decoder;
   static #encoder = new TextEncoder("utf-8");
 
+  static #hexDigitPairs = Array.from({length: 256}, (_, byte) =>
+    byte.toString(16).padStart(2, "0"),
+  );
+
   static calculateBitCount(bitstring) {
     if (bitstring.bytes !== null) {
       const completeByteCount =
@@ -644,16 +648,10 @@ export default class Bitstring {
 
   static maybeResolveHex(bitstring) {
     if (bitstring.hex === null) {
-      $.maybeSetBytesFromText(bitstring);
-
-      let hex = "";
-      const bytes = bitstring.bytes;
-
-      for (let i = 0; i < bytes.length; i++) {
-        hex += bytes[i].toString(16).padStart(2, "0");
-      }
-
-      bitstring.hex = hex;
+      bitstring.hex =
+        bitstring.bytes === null
+          ? $.#encodeTextAsHex(bitstring.text)
+          : $.#encodeBytesAsHex(bitstring.bytes);
     }
   }
 
@@ -1071,6 +1069,69 @@ export default class Bitstring {
 
     // Normalized number
     return sign * Math.pow(2, exponent - 15) * (1 + fraction / 1024);
+  }
+
+  static #encodeBytesAsHex(bytes) {
+    let hex = "";
+
+    for (let i = 0; i < bytes.length; i++) {
+      hex += $.#hexDigitPairs[bytes[i]];
+    }
+
+    return hex;
+  }
+
+  // Writes the hex of the text's UTF-8 bytes straight from its UTF-16 code units, so no byte array
+  // gets allocated. A literal builds a fresh binary on every render, and a map lookup keyed by one
+  // resolves its hex each time. TextEncoder.encode was nearly all of that cost.
+  //
+  // The output has to match TextEncoder byte for byte, since the hex is also the wire format. So a
+  // lone surrogate is written as U+FFFD, the same way TextEncoder writes it.
+  static #encodeTextAsHex(text) {
+    const pairs = $.#hexDigitPairs;
+    let hex = "";
+
+    for (let i = 0; i < text.length; i++) {
+      let codePoint = text.charCodeAt(i);
+
+      if (codePoint < 0x80) {
+        hex += pairs[codePoint];
+        continue;
+      }
+
+      if (codePoint < 0x800) {
+        hex +=
+          pairs[0xc0 | (codePoint >> 6)] + pairs[0x80 | (codePoint & 0x3f)];
+        continue;
+      }
+
+      if (codePoint >= 0xd800 && codePoint <= 0xdfff) {
+        // NaN past the end of the text, which fails both comparisons.
+        const next = text.charCodeAt(i + 1);
+
+        if (codePoint <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+          codePoint = 0x10000 + ((codePoint - 0xd800) << 10) + (next - 0xdc00);
+          i++;
+        } else {
+          codePoint = 0xfffd;
+        }
+      }
+
+      if (codePoint < 0x10000) {
+        hex +=
+          pairs[0xe0 | (codePoint >> 12)] +
+          pairs[0x80 | ((codePoint >> 6) & 0x3f)] +
+          pairs[0x80 | (codePoint & 0x3f)];
+      } else {
+        hex +=
+          pairs[0xf0 | (codePoint >> 18)] +
+          pairs[0x80 | ((codePoint >> 12) & 0x3f)] +
+          pairs[0x80 | ((codePoint >> 6) & 0x3f)] +
+          pairs[0x80 | (codePoint & 0x3f)];
+      }
+    }
+
+    return hex;
   }
 
   static #fromSegmentWithIntegerWithinNumberRangeValue(segment) {
