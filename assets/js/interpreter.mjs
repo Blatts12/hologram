@@ -79,6 +79,12 @@ export default class Interpreter {
     "__struct__/1",
   ]);
 
+  // alias string -> the JS class name it encodes to. The mapping is fixed by the alias, and a
+  // render asks for the same handful of modules once per component it renders, so the split,
+  // the capitalize and the join are paid once per module for the life of the page rather than
+  // once per lookup. Bounded by the number of modules the app has.
+  static #moduleJsNames = new Map();
+
   // Deps: [:lists.keyfind/3]
   static accessKeywordListElement(keywordList, key, defaultValue = null) {
     const keyfindRes = Erlang_Lists["keyfind/3"](
@@ -980,17 +986,29 @@ export default class Interpreter {
   static moduleJsName(alias) {
     const aliasStr = Type.isAtom(alias) ? alias.value : alias;
 
+    const cached = Interpreter.#moduleJsNames.get(aliasStr);
+
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    let jsName;
+
     if (aliasStr === "erlang") {
-      return "Erlang";
+      jsName = "Erlang";
+    } else {
+      const segments = aliasStr.split(/[._]/);
+
+      if (segments[0] !== "Elixir") {
+        segments.unshift("Erlang");
+      }
+
+      jsName = segments.map((segment) => Utils.capitalize(segment)).join("_");
     }
 
-    let segments = aliasStr.split(/[._]/);
+    Interpreter.#moduleJsNames.set(aliasStr, jsName);
 
-    if (segments[0] !== "Elixir") {
-      segments.unshift("Erlang");
-    }
-
-    return segments.map((segment) => Utils.capitalize(segment)).join("_");
+    return jsName;
   }
 
   static moduleProxy(alias) {
