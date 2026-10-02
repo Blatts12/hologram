@@ -5410,6 +5410,40 @@ describe("Bitstring", () => {
 
       assert.equal(bitstring.hex, "486f6c6f6772616d");
     });
+
+    it("for byte-built bitstring", () => {
+      const bitstring = Bitstring.fromBytes([0, 15, 16, 255]);
+
+      Bitstring.maybeResolveHex(bitstring);
+
+      assert.equal(bitstring.hex, "000f10ff");
+    });
+
+    it("writes the same hex as TextEncoder for text of every UTF-8 length", () => {
+      const texts = [
+        "\u007f\u0080",
+        "߿ࠀ",
+        "￿",
+        "zażółć gęślą jaźń",
+        "🎉 and 𝄞",
+        "\ud800",
+        "a\udc00b",
+        "\ud83d",
+        "\ud83d😀",
+      ];
+
+      for (const text of texts) {
+        const bitstring = Type.bitstring(text);
+
+        Bitstring.maybeResolveHex(bitstring);
+
+        const expected = Array.from(new TextEncoder().encode(text), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
+
+        assert.equal(bitstring.hex, expected, JSON.stringify(text));
+      }
+    });
   });
 
   describe("maybeSetBytesFromText()", () => {
