@@ -3477,6 +3477,137 @@ describe("Renderer", () => {
             // Should not have called the setter since value didn't change
             assert.strictEqual(setterCallCount, 0);
           });
+
+          // A color input lowercases the hex it is given, so the value read back off it is not
+          // the value written. Comparing the two directly makes every render write again, onto an
+          // element the user may be dragging.
+          it("does not update a color input whose value differs only by the browser's normalization", () => {
+            const node = Type.tuple([
+              Type.atom("element"),
+              Type.bitstring("input"),
+              Type.list([
+                Type.tuple([
+                  Type.bitstring("type"),
+                  Type.keywordList([
+                    [Type.atom("text"), Type.bitstring("color")],
+                  ]),
+                ]),
+                Type.tuple([
+                  Type.bitstring("value"),
+                  Type.keywordList([
+                    [Type.atom("text"), Type.bitstring("#FF0000")],
+                  ]),
+                ]),
+              ]),
+              Type.list(),
+            ]);
+
+            const result = Renderer.renderDom(
+              node,
+              context,
+              slots,
+              defaultTarget,
+              parentTagName,
+            );
+
+            const colorInput = document.createElement("input");
+            colorInput.type = "color";
+            colorInput.value = "#ff0000";
+
+            let setterCallCount = 0;
+
+            Object.defineProperty(colorInput, "value", {
+              get: () => "#ff0000",
+              set: () => {
+                setterCallCount++;
+              },
+              configurable: true,
+            });
+
+            result.data.hook.update(
+              {data: {hologramFormInputValue: "#FF0000"}},
+              {elm: colorInput, data: {hologramFormInputValue: "#FF0000"}},
+            );
+
+            assert.strictEqual(setterCallCount, 0);
+          });
+
+          it("updates a color input whose value is genuinely different", () => {
+            const node = Type.tuple([
+              Type.atom("element"),
+              Type.bitstring("input"),
+              Type.list([
+                Type.tuple([
+                  Type.bitstring("type"),
+                  Type.keywordList([
+                    [Type.atom("text"), Type.bitstring("color")],
+                  ]),
+                ]),
+                Type.tuple([
+                  Type.bitstring("value"),
+                  Type.keywordList([
+                    [Type.atom("text"), Type.bitstring("#00FF00")],
+                  ]),
+                ]),
+              ]),
+              Type.list(),
+            ]);
+
+            const result = Renderer.renderDom(
+              node,
+              context,
+              slots,
+              defaultTarget,
+              parentTagName,
+            );
+
+            const colorInput = document.createElement("input");
+            colorInput.type = "color";
+            colorInput.value = "#ff0000";
+
+            result.data.hook.update(
+              {data: {hologramFormInputValue: "#ff0000"}},
+              {elm: colorInput, data: {hologramFormInputValue: "#00FF00"}},
+            );
+
+            assert.strictEqual(colorInput.value, "#00ff00");
+          });
+
+          // A text input stores what it is given, so nothing here may make two different values
+          // compare equal.
+          it("updates a text input whose value differs only by case", () => {
+            const node = Type.tuple([
+              Type.atom("element"),
+              Type.bitstring("input"),
+              Type.list([
+                Type.tuple([
+                  Type.bitstring("value"),
+                  Type.keywordList([
+                    [Type.atom("text"), Type.bitstring("ABC")],
+                  ]),
+                ]),
+              ]),
+              Type.list(),
+            ]);
+
+            const result = Renderer.renderDom(
+              node,
+              context,
+              slots,
+              defaultTarget,
+              parentTagName,
+            );
+
+            const textInput = document.createElement("input");
+            textInput.value = "abc";
+
+            result.data.hook.update(
+              {data: {hologramFormInputValue: "abc"}},
+              {elm: textInput, data: {hologramFormInputValue: "ABC"}},
+            );
+
+            assert.strictEqual(textInput.value, "ABC");
+          });
         });
       });
 
