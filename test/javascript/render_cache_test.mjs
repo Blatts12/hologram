@@ -12,6 +12,7 @@ import {defineLayoutFixture} from "./support/fixtures/layout_fixture.mjs";
 import ComponentRegistry from "../../assets/js/component_registry.mjs";
 import Hologram from "../../assets/js/hologram.mjs";
 import Interpreter from "../../assets/js/interpreter.mjs";
+import LocalDatabase from "../../assets/js/local_database.mjs";
 import RenderCache from "../../assets/js/render_cache.mjs";
 import Renderer from "../../assets/js/renderer.mjs";
 import Type from "../../assets/js/type.mjs";
@@ -284,6 +285,37 @@ describe("RenderCache", () => {
 
     assert.notStrictEqual(second[0], first[0]);
     assert.equal(textOf(second[0]), "large");
+  });
+
+  it("re-renders a component whose descendant read the local database", () => {
+    // What a query answers moves with rows a sync frame changes, with no state changing anywhere.
+    defineComponent(CHILD, [propDefinition("cid")], (_vars) => [
+      element(
+        "span",
+        [],
+        [
+          Type.tuple([
+            Type.atom("text"),
+            Type.bitstring(
+              LocalDatabase.isSynced("all") ? "synced" : "filling",
+            ),
+          ]),
+        ],
+      ),
+    ]);
+
+    try {
+      const first = bodyChildren(renderPage());
+
+      LocalDatabase.markSynced("all");
+
+      const second = bodyChildren(renderPage());
+
+      assert.notStrictEqual(second[0], first[0]);
+      assert.equal(textOf(second[0].children[1]), "synced");
+    } finally {
+      LocalDatabase.reset();
+    }
   });
 
   it("puts a skipped subtree's window listener bindings back", () => {

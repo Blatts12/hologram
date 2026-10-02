@@ -16,6 +16,10 @@ import Type from "./type.mjs";
 // cannot see on its own: a descendant's own state, which an action can change without touching
 // anything this component passes down (see markDirty and the descendant set each entry carries).
 //
+// Nor can the key see the local database: a query a render runs answers from rows a sync frame or
+// a pending write can change while every input stays the same. A render that reads it is not
+// stored, and neither is any render enclosing it (see markDatabaseRead).
+//
 // The cache holds one entry per cid and lives only as long as the page the component registry
 // answers for: a new epoch discards everything, since an entry's vnodes point at DOM nodes of a
 // page that is gone.
@@ -107,6 +111,7 @@ export default class RenderCache {
       bindingCounts: bindingCounts,
       cidKey: cidKey,
       descendantCidKeys: new Set(),
+      readsDatabase: false,
     };
 
     $.#stack.push(frame);
@@ -145,8 +150,21 @@ export default class RenderCache {
       }
     }
 
+    if (frame.readsDatabase) {
+      $.#entries.delete(frame.cidKey);
+      return;
+    }
+
     entry.descendantCidKeys = frame.descendantCidKeys;
     $.#entries.set(frame.cidKey, entry);
+  }
+
+  // Marks every render on the stack as one that read the local database, so that none of them is
+  // stored: serving an enclosing render would skip this one too. A no-op outside a render.
+  static markDatabaseRead() {
+    for (const frame of $.#stack) {
+      frame.readsDatabase = true;
+    }
   }
 
   // Marks a component as having state that no entry has seen yet. Called where the registry takes

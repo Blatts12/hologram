@@ -12,6 +12,7 @@
 
 import Model from "./model.mjs";
 import Overlay from "./overlay.mjs";
+import RenderCache from "./render_cache.mjs";
 
 // What joins a type and an id into one carried-mark key. A NUL cannot occur in either half, so
 // the two can never be told apart wrongly - and it is spelled as an escape rather than written
@@ -54,14 +55,17 @@ export default class LocalDatabase {
   // holds one has to be asked of the server's copy - a row that exists only as a write this
   // client has not sent yet is not a row the server can be talking about.
   static baseRow(type, id) {
+    RenderCache.markDatabaseRead();
     return LocalDatabase.#tables[type]?.[id] ?? null;
   }
 
   static baseTable(type) {
+    RenderCache.markDatabaseRead();
     return LocalDatabase.#tables[type] ?? {};
   }
 
   static baseTargetIds(type, relationship, sourceId) {
+    RenderCache.markDatabaseRead();
     return LocalDatabase.#facts[type]?.[relationship]?.[sourceId] ?? new Set();
   }
 
@@ -134,10 +138,12 @@ export default class LocalDatabase {
   // absence is what a stored set may still speak for. `baseTargetIds` cannot tell them apart,
   // answering an empty set for both.
   static hasFacts(type, relationship, sourceId) {
+    RenderCache.markDatabaseRead();
     return LocalDatabase.#facts[type]?.[relationship]?.[sourceId] !== undefined;
   }
 
   static isSynced(scope) {
+    RenderCache.markDatabaseRead();
     return LocalDatabase.#syncedScopes.has(scope);
   }
 
