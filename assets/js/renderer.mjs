@@ -1285,20 +1285,10 @@ export default class Renderer {
   // is kept identical to the server's, and it stops being redundant the moment a query prop can
   // answer from somewhere other than a fresh run.
   static #filterAllowedProps(propDoms, moduleProxy) {
-    const registeredPropNames = Renderer.#getPropDefinitions(moduleProxy)
-      .data.filter(
-        (prop) =>
-          Renderer.#contextKey(prop.data[2]) === null &&
-          Renderer.#fromQueryCapture(prop.data[2]) === null,
-      )
-      .map((prop) => $.toBitstring(prop.data[0]));
-
-    const allowedPropNames = registeredPropNames.concat(Type.bitstring("cid"));
+    const allowedPropNames = Renderer.#getAllowedPropNames(moduleProxy);
 
     return propDoms.filter((propDom) =>
-      allowedPropNames.some((name) =>
-        Interpreter.isStrictlyEqual(name, propDom.data[0]),
-      ),
+      allowedPropNames.has(Bitstring.toText(propDom.data[0])),
     );
   }
 
@@ -1387,6 +1377,32 @@ export default class Renderer {
     }
 
     return moduleProxy.__constrainedProps__;
+  }
+
+  // The names a component accepts as props. A property of the module rather than of the render, so
+  // it is derived once and kept on the module proxy the way __props__ already is - every component
+  // of every render filters its props through it.
+  //
+  // A Set of plain text rather than a list of bitstrings: the filter asked every incoming prop
+  // against every declared one, which is the product of the two for a component that takes more
+  // than a couple of props.
+  static #getAllowedPropNames(moduleProxy) {
+    if (!("__allowedPropNames__" in moduleProxy)) {
+      const names = new Set(["cid"]);
+
+      for (const prop of Renderer.#getPropDefinitions(moduleProxy).data) {
+        if (
+          Renderer.#contextKey(prop.data[2]) === null &&
+          Renderer.#fromQueryCapture(prop.data[2]) === null
+        ) {
+          names.add($.toText(prop.data[0]));
+        }
+      }
+
+      moduleProxy.__allowedPropNames__ = names;
+    }
+
+    return moduleProxy.__allowedPropNames__;
   }
 
   static #getPropDefinitions(moduleProxy) {
