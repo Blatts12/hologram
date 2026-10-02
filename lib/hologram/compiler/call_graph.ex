@@ -388,6 +388,43 @@ defmodule Hologram.Compiler.CallGraph do
     {Code, :ensure_loaded, 1},
     {Exception, :format_stacktrace, 1},
     {FunctionClauseError, :message, 1},
+    {Hologram.Auth, :can?, 3},
+    # The grant verbs, hand-written for the client the way the data verbs below are: one spelling
+    # on both tiers. What differs is the end - the server writes the store, the browser appends a
+    # create or a delete of the grant row to the running batch, and the server replays the gate
+    # when the batch lands. The /2 forms are ported only to refuse: a global grant is trusted-only.
+    {Hologram.Auth, :grant_role, 2},
+    {Hologram.Auth, :grant_role, 3},
+    {Hologram.Auth, :revoke_role, 2},
+    {Hologram.Auth, :revoke_role, 3},
+    # The data verbs, hand-written for the client the way the query stages are: one spelling on
+    # both tiers, so a domain helper reading and writing through them moves between an action, a
+    # command and a job untouched. What differs underneath is only where the rows are.
+    {Hologram.DB, :create, 1},
+    {Hologram.DB, :create!, 1},
+    {Hologram.DB, :delete, 1},
+    {Hologram.DB, :delete, 2},
+    {Hologram.DB, :delete!, 1},
+    {Hologram.DB, :delete!, 2},
+    {Hologram.DB, :read, 1},
+    {Hologram.DB, :read, 2},
+    {Hologram.DB, :rollback, 1},
+    {Hologram.DB, :transaction, 1},
+    {Hologram.DB, :transaction, 2},
+    {Hologram.DB, :update, 1},
+    {Hologram.DB, :update, 3},
+    {Hologram.DB, :update!, 1},
+    {Hologram.DB, :update!, 3},
+    {Hologram.Entity, :generate_id, 0},
+    # Constructing an entity and validating one both read what the type DECLARES - its defaults,
+    # its constraints, the attributes a caller may set - and an entity module ships no reflection
+    # to the client. The ports read the model the build bakes instead, for the reason the query
+    # stages do, and keeping the transpiled originals out of the bundle is what makes that the
+    # only answer they can give.
+    {Hologram.Entity, :new, 1},
+    {Hologram.Entity, :new, 2},
+    {Hologram.Entity, :validate, 1},
+    {Hologram.Entity, :validate, 2},
     {Hologram.JS, :call, 4},
     {Hologram.JS, :delete, 3},
     {Hologram.JS, :dispatch_event, 5},
@@ -398,6 +435,37 @@ defmodule Hologram.Compiler.CallGraph do
     {Hologram.JS, :new, 3},
     {Hologram.JS, :set, 4},
     {Hologram.JS, :typeof, 2},
+    # The query stages build the PLAIN term the client's kernel evaluates, and the write stages
+    # record on the entity struct an action is holding. Both validate against the model baked into
+    # the bundle rather than against entity reflection, which no client carries - and keeping the
+    # transpiled originals out of the bundle is what makes that possible. trust/1 is here to be
+    # REFUSED: the server's authority is not a client's to claim, on a write or on a read.
+    # A job is an entity type, so enqueuing one is an ordinary create of its row - what this port
+    # carries past that is the option parsing and the refusals.
+    {Hologram.Job, :create, 1},
+    {Hologram.Job, :create, 2},
+    {Hologram.Job, :create, 3},
+    {Hologram.Job, :create!, 1},
+    {Hologram.Job, :create!, 2},
+    {Hologram.Job, :create!, 3},
+    {Hologram.Job, :framework_attribute_names, 0},
+    {Hologram.Query, :add_relationship, 3},
+    {Hologram.Query, :authorize, 2},
+    {Hologram.Query, :count, 1},
+    {Hologram.Query, :decrement, 3},
+    {Hologram.Query, :delete_relationship, 3},
+    {Hologram.Query, :filter, 2},
+    {Hologram.Query, :include, 2},
+    {Hologram.Query, :include, 3},
+    {Hologram.Query, :increment, 3},
+    {Hologram.Query, :limit, 2},
+    {Hologram.Query, :normalize, 1},
+    {Hologram.Query, :offset, 2},
+    {Hologram.Query, :one, 1},
+    {Hologram.Query, :order_by, 2},
+    {Hologram.Query, :put_attribute, 2},
+    {Hologram.Query, :put_attribute, 3},
+    {Hologram.Query, :trust, 1},
     {Hologram.Router.Helpers, :asset_path, 1},
     {IO, :inspect, 1},
     {IO, :inspect, 2},
@@ -468,11 +536,25 @@ defmodule Hologram.Compiler.CallGraph do
     manually_ported_code_module: [
       {:code, :ensure_loaded, 1}
     ],
+    # The entity port matches a declared format against a value by running the pattern the model
+    # compiled. It reaches the engine through a module proxy, so no :re atom appears in
+    # client-reachable code for the compiler to follow - the runtime holds re.run/3 today only
+    # because something else in the build happens to reach it.
+    manually_ported_entity_module: [
+      {:re, :run, 3}
+    ],
     manually_ported_function_clause_error_module: [
       {Exception, :format_mfa, 3}
     ],
     manually_ported_io_module: [
       {:erlang, :iolist_to_binary, 1}
+    ],
+    # A declared format is baked as its source and its options, and the model compiles it into a
+    # pattern the first time it reads the type - reached through a module proxy like the port's
+    # own call. It rides in through the encoded-regex edge as well, which is a coupling rather
+    # than a guarantee: the model is a reader in its own right.
+    model_class: [
+      {:re, :compile, 2}
     ],
     operation_class: [
       {:maps, :from_list, 1},
@@ -844,7 +926,7 @@ defmodule Hologram.Compiler.CallGraph do
   Returns a clone of the given call graph, with its modules. The clone starts with nothing reached
   (see build_reach/3): it is a graph to list from, not one to grow.
 
-  Benchmark: https://github.com/bartblast/hologram/blob/master/benchmarks/compiler/call_graph/clone_1/README.md
+  Benchmark: https://github.com/bartblast/hologram/blob/master/benchmarks/elixir/compiler/call_graph/clone_1/README.md
   """
   @spec clone(t, T.opts()) :: t
   def clone(%{pid: pid} = call_graph, opts \\ []) do
@@ -861,7 +943,7 @@ defmodule Hologram.Compiler.CallGraph do
   Serializes the call graph, its modules and what the walk of build_reach/3 reached included, and
   writes it to a file, tagged with the dump version that load/2 checks.
 
-  Benchmarks: https://github.com/bartblast/hologram/blob/master/benchmarks/compiler/call_graph/dump_2/README.md
+  Benchmarks: https://github.com/bartblast/hologram/blob/master/benchmarks/elixir/compiler/call_graph/dump_2/README.md
   """
   @spec dump(t, String.t()) :: t
   def dump(%{pid: pid} = call_graph, path) do
@@ -1169,7 +1251,7 @@ defmodule Hologram.Compiler.CallGraph do
   rebuilding the graph paths of modules that have been edited,
   and adding the graph paths of modules that have been added.
 
-  Benchmarks: https://github.com/bartblast/hologram/blob/master/benchmarks/compiler/call_graph/patch_3/README.md
+  Benchmarks: https://github.com/bartblast/hologram/blob/master/benchmarks/elixir/compiler/call_graph/patch_3/README.md
   """
   @spec patch(t, PLT.t(), map) :: t
   def patch(call_graph, ir_plt, diff) do
@@ -1275,7 +1357,7 @@ defmodule Hologram.Compiler.CallGraph do
   @doc """
   Removes call graph vertices for Elixir functions ported manually.
 
-  Benchmark: https://github.com/bartblast/hologram/blob/master/benchmarks/compiler/call_graph/remove_manually_ported_mfas_1/README.md
+  Benchmark: https://github.com/bartblast/hologram/blob/master/benchmarks/elixir/compiler/call_graph/remove_manually_ported_mfas_1/README.md
   """
   @spec remove_manually_ported_mfas(t) :: t
   def remove_manually_ported_mfas(call_graph) do
@@ -1290,7 +1372,7 @@ defmodule Hologram.Compiler.CallGraph do
   of functions called from all over the graph, so it touches the graph many times over: on a graph
   of 160,893 vertices and 613,932 edges with 2,812 runtime MFAs it took 8.8 s, against 0.31 s here.
 
-  Benchmark: https://github.com/bartblast/hologram/blob/master/benchmarks/compiler/call_graph/remove_runtime_mfas!_2/README.md
+  Benchmark: https://github.com/bartblast/hologram/blob/master/benchmarks/elixir/compiler/call_graph/remove_runtime_mfas!_2/README.md
   """
   @spec remove_runtime_mfas!(t, [mfa]) :: t
   def remove_runtime_mfas!(%{pid: pid} = call_graph, runtime_mfas) do
@@ -1322,7 +1404,7 @@ defmodule Hologram.Compiler.CallGraph do
   @doc """
   Removes the vertices from the call graph.
 
-  Benchmarks: https://github.com/bartblast/hologram/blob/master/benchmarks/compiler/call_graph/remove_vertices_2/README.md
+  Benchmarks: https://github.com/bartblast/hologram/blob/master/benchmarks/elixir/compiler/call_graph/remove_vertices_2/README.md
   """
   @spec remove_vertices(t, [vertex]) :: t
   def remove_vertices(%{pid: pid} = call_graph, vertices) do

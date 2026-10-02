@@ -1,0 +1,771 @@
+"use strict";
+
+import {assert, defineRuntimeGlobals, sinon} from "./support/helpers.mjs";
+
+import Batch from "../../assets/js/batch.mjs";
+import Clock from "../../assets/js/clock.mjs";
+import Deltas from "../../assets/js/deltas.mjs";
+import HologramRuntimeError from "../../assets/js/errors/runtime_error.mjs";
+import LocalDatabase from "../../assets/js/local_database.mjs";
+import Model from "../../assets/js/model.mjs";
+import Overlay from "../../assets/js/overlay.mjs";
+
+defineRuntimeGlobals();
+
+describe("Deltas", () => {
+  const PROJECT = "MyApp.Project";
+  const TASK = "MyApp.Task";
+
+  beforeEach(() => {
+    globalThis.Hologram.sync = {
+      model: {
+        [PROJECT]: {
+          attributes: {id: "uuid", name: "string"},
+          relationships: {
+            owner: {toMany: false, type: "MyApp.User"},
+            tasks: {toMany: true, type: TASK},
+          },
+          serverOnly: [],
+        },
+        [TASK]: {
+          attributes: {
+            done: "boolean",
+            id: "uuid",
+            note: "string",
+            title: "string",
+          },
+          relationships: {},
+          serverOnly: [],
+        },
+      },
+    };
+
+    Clock.reset();
+    LocalDatabase.reset();
+    Model.reset();
+    Overlay.reset();
+  });
+
+  afterEach(() => {
+    Overlay.reset();
+  });
+
+  describe("apply() - put_entity", () => {
+    it("files the row under its type and id", () => {
+      Deltas.apply({
+        put_entity: {[TASK]: [{done: false, id: "t1", title: "Draft copy"}]},
+      });
+
+      const row = LocalDatabase.getRow(TASK, "t1");
+
+      assert.equal(row.id, "t1");
+      assert.equal(row.title, "Draft copy");
+      assert.isFalse(row.done);
+    });
+
+    it("files the row's revisions beside its attributes", () => {
+      Deltas.apply({
+        put_entity: {
+          [TASK]: [
+            {
+              done: false,
+              id: "t1",
+              title: "Draft copy",
+              $revisions: {title: 3},
+            },
+          ],
+        },
+      });
+
+      assert.deepEqual(LocalDatabase.getRow(TASK, "t1").$revisions, {title: 3});
+    });
+
+    it("records the target ids a to-many relationship names as facts", () => {
+      Deltas.apply({
+        put_entity: {
+          [PROJECT]: [{id: "p1", name: "Website", tasks: ["t1", "t2"]}],
+        },
+      });
+
+      assert.deepEqual(
+        LocalDatabase.getTargetIds(PROJECT, "tasks", "p1"),
+        new Set(["t1", "t2"]),
+      );
+    });
+
+    // The pot is flat: what a row states about a relationship lives in the facts, so a row left
+    // holding its own target ids would be answered from two places that can disagree.
+    it("keeps the relationship out of the filed row", () => {
+      Deltas.apply({
+        put_entity: {[PROJECT]: [{id: "p1", name: "Website", tasks: ["t1"]}]},
+      });
+
+      assert.deepEqual(LocalDatabase.getRow(PROJECT, "p1"), {
+        id: "p1",
+        name: "Website",
+        name_sort: "website",
+      });
+    });
+
+    it("replaces the target set a repeated row states", () => {
+      Deltas.apply({
+        put_entity: {
+          [PROJECT]: [{id: "p1", name: "Website", tasks: ["t1", "t2"]}],
+        },
+      });
+
+      Deltas.apply({
+        put_entity: {[PROJECT]: [{id: "p1", name: "Website", tasks: ["t2"]}]},
+      });
+
+      assert.deepEqual(
+        LocalDatabase.getTargetIds(PROJECT, "tasks", "p1"),
+        new Set(["t2"]),
+      );
+    });
+
+    // What the keys themselves are is Model.computeSortKeys's, and its own tests say so - what a
+    // filed row proves is that filing asks for them at all.
+    it("files a sort key beside the string attribute it derives from", () => {
+      Deltas.apply({
+        put_entity: {[TASK]: [{done: false, id: "t1", title: "Łódź"}]},
+      });
+
+      assert.equal(LocalDatabase.getRow(TASK, "t1").title_sort, "lodz");
+    });
+
+    it("files every row of every type a frame carries", () => {
+      Deltas.apply({
+        put_entity: {
+          [PROJECT]: [{id: "p1", name: "Website"}],
+          [TASK]: [
+            {done: false, id: "t1", title: "Draft copy"},
+            {done: false, id: "t2", title: "Ship it"},
+          ],
+        },
+      });
+
+      assert.equal(LocalDatabase.getRow(PROJECT, "p1").name, "Website");
+      assert.equal(LocalDatabase.getRow(TASK, "t1").title, "Draft copy");
+      assert.equal(LocalDatabase.getRow(TASK, "t2").title, "Ship it");
+    });
+  });
+
+  describe("apply() - rows a page carried", () => {
+    const carry = (rows) =>
+      Deltas.apply({put_entity: {[TASK]: rows}}, {insertOnly: true});
+
+    it("files a row the client does not hold", () => {
+      carry([{done: false, id: "t1", title: "Draft copy"}]);
+
+      assert.equal(LocalDatabase.getRow(TASK, "t1").title, "Draft copy");
+    });
+
+    // What a page carries can be OLDER than what the client holds: a page rendered at one moment
+    // lands after the stream delivered a later change to the same row, and overwriting would put
+    // back a value nothing will correct.
+    it("leaves a row the client already holds alone", () => {
+      Deltas.apply({
+        put_entity: {
+          [TASK]: [{done: false, id: "t1", title: "from the stream"}],
+        },
+      });
+
+      carry([{done: false, id: "t1", title: "from the page"}]);
+
+      assert.equal(LocalDatabase.getRow(TASK, "t1").title, "from the stream");
+    });
+
+    it("files the rows the client lacks and no others", () => {
+      Deltas.apply({
+        put_entity: {
+          [TASK]: [{done: false, id: "t1", title: "from the stream"}],
+        },
+      });
+
+      carry([
+        {done: false, id: "t1", title: "from the page"},
+        {done: false, id: "t2", title: "new to the client"},
+      ]);
+
+      assert.equal(LocalDatabase.getRow(TASK, "t1").title, "from the stream");
+      assert.equal(LocalDatabase.getRow(TASK, "t2").title, "new to the client");
+    });
+
+    it("remembers what it filed as unconfirmed by the stream", () => {
+      carry([{done: false, id: "t1", title: "Draft copy"}]);
+
+      assert.deepEqual(LocalDatabase.carriedEntries(), [[TASK, "t1"]]);
+    });
+
+    it("remembers nothing for a row it left alone", () => {
+      Deltas.apply({
+        put_entity: {
+          [TASK]: [{done: false, id: "t1", title: "from the stream"}],
+        },
+      });
+
+      carry([{done: false, id: "t1", title: "from the page"}]);
+
+      assert.deepEqual(LocalDatabase.carriedEntries(), []);
+    });
+
+    // Once the stream delivers it, it is no longer a row the client has only because a page said
+    // so - and no longer one the completeness marker should take away.
+    it("forgets a carried row the stream then delivers", () => {
+      carry([{done: false, id: "t1", title: "from the page"}]);
+
+      Deltas.apply({
+        put_entity: {
+          [TASK]: [{done: false, id: "t1", title: "from the stream"}],
+        },
+      });
+
+      assert.deepEqual(LocalDatabase.carriedEntries(), []);
+      assert.equal(LocalDatabase.getRow(TASK, "t1").title, "from the stream");
+    });
+
+    it("files the relationship facts of a row it files", () => {
+      Deltas.apply(
+        {put_entity: {[PROJECT]: [{id: "p1", name: "Website", tasks: ["t1"]}]}},
+        {insertOnly: true},
+      );
+
+      assert.deepEqual(
+        LocalDatabase.getTargetIds(PROJECT, "tasks", "p1"),
+        new Set(["t1"]),
+      );
+    });
+
+    it("derives sort keys the way the stream's rows get them", () => {
+      carry([{done: false, id: "t1", title: "Łódź"}]);
+
+      assert.equal(LocalDatabase.getRow(TASK, "t1").title_sort, "lodz");
+    });
+  });
+
+  describe("apply() - patch_entity", () => {
+    beforeEach(() => {
+      Deltas.apply({
+        put_entity: {[TASK]: [{done: false, id: "t1", title: "Draft copy"}]},
+      });
+    });
+
+    it("writes the attributes the patch names", () => {
+      Deltas.apply({patch_entity: {[TASK]: [{id: "t1", title: "Ship it"}]}});
+
+      assert.equal(LocalDatabase.getRow(TASK, "t1").title, "Ship it");
+    });
+
+    it("leaves the attributes the patch does not name", () => {
+      Deltas.apply({patch_entity: {[TASK]: [{id: "t1", title: "Ship it"}]}});
+
+      assert.isFalse(LocalDatabase.getRow(TASK, "t1").done);
+    });
+
+    it("computes the sort key again from the value that moved", () => {
+      Deltas.apply({patch_entity: {[TASK]: [{id: "t1", title: "Zürich"}]}});
+
+      assert.equal(LocalDatabase.getRow(TASK, "t1").title_sort, "zurich");
+    });
+
+    // A patch is a bag of attributes, and the row it merges into is the FILED one, whose
+    // relationships were split out into the facts when it was filed - so a patch carries nothing
+    // that could restate a target set, however many edges ride in the same frame.
+    it("leaves the row's relationship facts alone", () => {
+      Deltas.apply({
+        put_entity: {[PROJECT]: [{id: "p1", name: "Website", tasks: ["t1"]}]},
+      });
+
+      Deltas.apply({patch_entity: {[PROJECT]: [{id: "p1", name: "Intranet"}]}});
+
+      assert.deepEqual(
+        LocalDatabase.getTargetIds(PROJECT, "tasks", "p1"),
+        new Set(["t1"]),
+      );
+    });
+
+    it("writes the patch's revisions over the row's and leaves the rest", () => {
+      Deltas.apply({
+        put_entity: {
+          [TASK]: [
+            {
+              done: false,
+              id: "t1",
+              title: "Draft copy",
+              $revisions: {done: 1, title: 1},
+            },
+          ],
+        },
+      });
+
+      Deltas.apply({
+        patch_entity: {
+          [TASK]: [{id: "t1", title: "Ship it", $revisions: {title: 2}}],
+        },
+      });
+
+      assert.deepEqual(LocalDatabase.getRow(TASK, "t1").$revisions, {
+        done: 1,
+        title: 2,
+      });
+    });
+
+    it("leaves the map alone for a patch carrying no revisions", () => {
+      Deltas.apply({
+        put_entity: {
+          [TASK]: [
+            {
+              done: false,
+              id: "t1",
+              title: "Draft copy",
+              $revisions: {done: 1, title: 1},
+            },
+          ],
+        },
+      });
+
+      Deltas.apply({patch_entity: {[TASK]: [{id: "t1", title: "Ship it"}]}});
+
+      assert.deepEqual(LocalDatabase.getRow(TASK, "t1").$revisions, {
+        done: 1,
+        title: 1,
+      });
+    });
+
+    // A patch names a row the client was told about, so one it does not hold is one it has been
+    // told to let go of - filing the changes alone would leave a row with holes.
+    it("passes over a row the client does not hold", () => {
+      Deltas.apply({patch_entity: {[TASK]: [{id: "t9", title: "Ship it"}]}});
+
+      assert.isNull(LocalDatabase.getRow(TASK, "t9"));
+    });
+  });
+
+  describe("apply() - the clock's receive rule", () => {
+    // Frozen, so every expectation below is this millisecond's stamp rather than whatever the
+    // machine's clock reads between the revision being written and the stamp being taken.
+    const nowMs = 1_756_100_000_123;
+
+    let timers;
+
+    beforeEach(() => {
+      timers = sinon.useFakeTimers(nowMs);
+    });
+
+    afterEach(() => {
+      timers.restore();
+    });
+
+    it("advances past every revision a put carries", () => {
+      Deltas.apply({
+        put_entity: {
+          [TASK]: [
+            {
+              done: false,
+              id: "t1",
+              title: "Draft copy",
+              $revisions: {
+                done: nowMs * 1024 + 5000,
+                title: nowMs * 1024 + 9000,
+              },
+            },
+          ],
+        },
+      });
+
+      assert.equal(Clock.stamp(), nowMs * 1024 + 9001);
+    });
+
+    it("advances past every revision a patch carries", () => {
+      Deltas.apply({
+        put_entity: {[TASK]: [{done: false, id: "t1", title: "Draft copy"}]},
+      });
+
+      Deltas.apply({
+        patch_entity: {
+          [TASK]: [
+            {
+              id: "t1",
+              title: "Ship it",
+              $revisions: {title: nowMs * 1024 + 7000},
+            },
+          ],
+        },
+      });
+
+      assert.equal(Clock.stamp(), nowMs * 1024 + 7001);
+    });
+
+    // The rule is about what arrived, not about what was kept. Neither this case nor the carried
+    // one below can reach a based_on today - the client either lacks the row or holds a filed copy
+    // whose own revisions it observed - so what these two pin is the placement, not a bug they
+    // would otherwise let through.
+    it("advances past the revisions of a patch for a row it does not hold", () => {
+      Deltas.apply({
+        patch_entity: {
+          [TASK]: [
+            {
+              id: "t9",
+              title: "Ship it",
+              $revisions: {title: nowMs * 1024 + 3000},
+            },
+          ],
+        },
+      });
+
+      assert.equal(Clock.stamp(), nowMs * 1024 + 3001);
+    });
+
+    it("advances past the revisions of a carried row it leaves alone", () => {
+      Deltas.apply({
+        put_entity: {[TASK]: [{done: false, id: "t1", title: "Draft copy"}]},
+      });
+
+      Deltas.apply(
+        {
+          put_entity: {
+            [TASK]: [
+              {
+                done: false,
+                id: "t1",
+                title: "Carried copy",
+                $revisions: {title: nowMs * 1024 + 4000},
+              },
+            ],
+          },
+        },
+        {insertOnly: true},
+      );
+
+      assert.equal(LocalDatabase.getRow(TASK, "t1").title, "Draft copy");
+      assert.equal(Clock.stamp(), nowMs * 1024 + 4001);
+    });
+
+    it("leaves the clock alone for a row carrying no revisions", () => {
+      Deltas.apply({
+        put_entity: {[TASK]: [{done: false, id: "t1", title: "Draft copy"}]},
+      });
+
+      assert.equal(Clock.stamp(), nowMs * 1024);
+    });
+  });
+
+  // A frame is a statement about the SERVER's row, so what ingest asks is what the server last
+  // said - never what this client has written and not yet sent. Reading the folded row instead
+  // would let a frame file a row into the base on the strength of a create the server has never
+  // seen.
+  describe("apply() - against a row that is only a pending write", () => {
+    beforeEach(() => {
+      const batch = new Batch("cid");
+
+      batch.append({
+        data: {done: false, title: "Mine, unsent"},
+        id: "t9",
+        op: "create",
+        stamp: 1024,
+        type: TASK,
+      });
+
+      Overlay.push(batch);
+    });
+
+    it("passes a patch over, as it does for any row the server has not sent", () => {
+      Deltas.apply({patch_entity: {[TASK]: [{id: "t9", title: "Ship it"}]}});
+
+      assert.isNull(LocalDatabase.baseRow(TASK, "t9"));
+      assert.equal(LocalDatabase.getRow(TASK, "t9").title, "Mine, unsent");
+    });
+
+    it("files a carried row, which the client does not yet hold from the server", () => {
+      Deltas.apply(
+        {
+          put_entity: {
+            [TASK]: [{done: true, id: "t9", title: "From the page"}],
+          },
+        },
+        {insertOnly: true},
+      );
+
+      assert.equal(LocalDatabase.baseRow(TASK, "t9").title, "From the page");
+    });
+  });
+
+  describe("apply() - unsync_entity", () => {
+    it("drops the row", () => {
+      Deltas.apply({
+        put_entity: {[TASK]: [{done: false, id: "t1", title: "Draft copy"}]},
+      });
+
+      Deltas.apply({unsync_entity: {[TASK]: ["t1"]}});
+
+      assert.isNull(LocalDatabase.getRow(TASK, "t1"));
+    });
+
+    it("drops the row's relationship facts with it", () => {
+      Deltas.apply({
+        put_entity: {[PROJECT]: [{id: "p1", name: "Website", tasks: ["t1"]}]},
+      });
+
+      Deltas.apply({unsync_entity: {[PROJECT]: ["p1"]}});
+
+      assert.deepEqual(
+        LocalDatabase.getTargetIds(PROJECT, "tasks", "p1"),
+        new Set(),
+      );
+    });
+  });
+
+  // Never sent in v1 - a row gone and a row out of reach are both told as unsync until offline
+  // writes need them apart.
+  describe("apply() - del_entity", () => {
+    it("drops the row the way an unsync does", () => {
+      Deltas.apply({
+        put_entity: {[TASK]: [{done: false, id: "t1", title: "Draft copy"}]},
+      });
+
+      Deltas.apply({del_entity: {[TASK]: ["t1"]}});
+
+      assert.isNull(LocalDatabase.getRow(TASK, "t1"));
+    });
+  });
+
+  describe("apply() - add_relationship", () => {
+    it("records the pair", () => {
+      Deltas.apply({
+        add_relationship: {
+          [PROJECT]: [{id: "p1", relationship: "tasks", target_id: "t3"}],
+        },
+      });
+
+      assert.deepEqual(
+        LocalDatabase.getTargetIds(PROJECT, "tasks", "p1"),
+        new Set(["t3"]),
+      );
+    });
+
+    it("keeps the pairs the source already had", () => {
+      Deltas.apply({
+        put_entity: {[PROJECT]: [{id: "p1", name: "Website", tasks: ["t1"]}]},
+      });
+
+      Deltas.apply({
+        add_relationship: {
+          [PROJECT]: [{id: "p1", relationship: "tasks", target_id: "t3"}],
+        },
+      });
+
+      assert.deepEqual(
+        LocalDatabase.getTargetIds(PROJECT, "tasks", "p1"),
+        new Set(["t1", "t3"]),
+      );
+    });
+  });
+
+  describe("apply() - del_relationship", () => {
+    it("removes the pair, keeping the source's others", () => {
+      Deltas.apply({
+        put_entity: {
+          [PROJECT]: [{id: "p1", name: "Website", tasks: ["t1", "t2"]}],
+        },
+      });
+
+      Deltas.apply({
+        del_relationship: {
+          [PROJECT]: [{id: "p1", relationship: "tasks", target_id: "t1"}],
+        },
+      });
+
+      assert.deepEqual(
+        LocalDatabase.getTargetIds(PROJECT, "tasks", "p1"),
+        new Set(["t2"]),
+      );
+    });
+  });
+
+  describe("apply() - a frame carrying several ops", () => {
+    it("applies each of them", () => {
+      Deltas.apply({
+        put_entity: {[TASK]: [{done: false, id: "t1", title: "Draft copy"}]},
+      });
+
+      Deltas.apply({
+        add_relationship: {
+          [PROJECT]: [{id: "p1", relationship: "tasks", target_id: "t3"}],
+        },
+        patch_entity: {[TASK]: [{id: "t1", title: "Ship it"}]},
+        put_entity: {[PROJECT]: [{id: "p1", name: "Website"}]},
+        unsync_entity: {[TASK]: ["t9"]},
+      });
+
+      assert.equal(LocalDatabase.getRow(TASK, "t1").title, "Ship it");
+      assert.equal(LocalDatabase.getRow(PROJECT, "p1").name, "Website");
+
+      assert.deepEqual(
+        LocalDatabase.getTargetIds(PROJECT, "tasks", "p1"),
+        new Set(["t3"]),
+      );
+    });
+  });
+
+  // A row and an edge of its own can both be in one frame - a row that arrives with a pair added
+  // in the same round is the ordinary case. They cannot disagree, because the server read both
+  // from one round: the put states the whole target set, the edge states one pair of it, and the
+  // set already reflects the pair. Applied either way round the facts land the same, which is
+  // what lets the payload be grouped by op at all.
+  describe("apply() - a row and an edge of its own in one frame", () => {
+    const edge = {
+      [PROJECT]: [{id: "p1", relationship: "tasks", target_id: "t2"}],
+    };
+
+    const rowHoldingBoth = {
+      [PROJECT]: [{id: "p1", name: "Website", tasks: ["t1", "t2"]}],
+    };
+
+    const rowHoldingOne = {
+      [PROJECT]: [{id: "p1", name: "Website", tasks: ["t1"]}],
+    };
+
+    const targetIds = () =>
+      new Set(LocalDatabase.getTargetIds(PROJECT, "tasks", "p1"));
+
+    it("lands the same facts whichever way round an added pair is applied", () => {
+      Deltas.apply({add_relationship: edge, put_entity: rowHoldingBoth});
+
+      const edgeFirst = targetIds();
+
+      LocalDatabase.reset();
+
+      Deltas.apply({put_entity: rowHoldingBoth, add_relationship: edge});
+
+      assert.deepEqual(edgeFirst, new Set(["t1", "t2"]));
+      assert.deepEqual(targetIds(), edgeFirst);
+    });
+
+    it("lands the same facts whichever way round a removed pair is applied", () => {
+      Deltas.apply({del_relationship: edge, put_entity: rowHoldingOne});
+
+      const edgeFirst = targetIds();
+
+      LocalDatabase.reset();
+
+      Deltas.apply({put_entity: rowHoldingOne, del_relationship: edge});
+
+      assert.deepEqual(edgeFirst, new Set(["t1"]));
+      assert.deepEqual(targetIds(), edgeFirst);
+    });
+  });
+
+  // The rows a frame WROTE, which is what a pending write of this client's is matched against to
+  // learn its effect is in the base now. Written rather than merely mentioned: a delta the ingest
+  // passes over changes nothing, so nothing about it is in there to be found.
+  describe("apply() - the rows it wrote", () => {
+    it("names a row it filed", () => {
+      const written = Deltas.apply({
+        put_entity: {[TASK]: [{id: "t1", title: "Draft copy"}]},
+      });
+
+      assert.deepStrictEqual(written, new Set([`${TASK} t1`]));
+    });
+
+    it("names a row it patched", () => {
+      LocalDatabase.putRow(TASK, {id: "t1", title: "Draft copy"});
+
+      const written = Deltas.apply({
+        patch_entity: {[TASK]: [{id: "t1", title: "Ship it"}]},
+      });
+
+      assert.deepStrictEqual(written, new Set([`${TASK} t1`]));
+    });
+
+    it("names a row it deleted", () => {
+      LocalDatabase.putRow(TASK, {id: "t1", title: "Draft copy"});
+
+      const written = Deltas.apply({del_entity: {[TASK]: ["t1"]}});
+
+      assert.deepStrictEqual(written, new Set([`${TASK} t1`]));
+    });
+
+    it("names a row it unsynced", () => {
+      LocalDatabase.putRow(TASK, {id: "t1", title: "Draft copy"});
+
+      const written = Deltas.apply({unsync_entity: {[TASK]: ["t1"]}});
+
+      assert.deepStrictEqual(written, new Set([`${TASK} t1`]));
+    });
+
+    // An edge names the row whose relationships changed, which is the row a batch's own edge
+    // write names - so the two match up.
+    it("names an edge's source row rather than its target", () => {
+      const written = Deltas.apply({
+        add_relationship: {
+          [PROJECT]: [{id: "p1", relationship: "tasks", target_id: "t1"}],
+        },
+      });
+
+      assert.deepStrictEqual(written, new Set([`${PROJECT} p1`]));
+    });
+
+    it("names an edge's source row when the pair is removed", () => {
+      const written = Deltas.apply({
+        del_relationship: {
+          [PROJECT]: [{id: "p1", relationship: "tasks", target_id: "t1"}],
+        },
+      });
+
+      assert.deepStrictEqual(written, new Set([`${PROJECT} p1`]));
+    });
+
+    it("names every row of a frame carrying several", () => {
+      const written = Deltas.apply({
+        put_entity: {
+          [PROJECT]: [{id: "p1", name: "Board"}],
+          [TASK]: [{id: "t1", title: "Draft copy"}],
+        },
+      });
+
+      assert.deepStrictEqual(written, new Set([`${PROJECT} p1`, `${TASK} t1`]));
+    });
+
+    // The base is left exactly as it was, so a pending write on that row is NOT in it - and a
+    // pending create told otherwise would go off the screen with nothing to put it back until the
+    // answer arrived.
+    it("names nothing for a patch it passed over", () => {
+      const written = Deltas.apply({
+        patch_entity: {[TASK]: [{id: "t9", title: "Ship it"}]},
+      });
+
+      assert.deepStrictEqual(written, new Set());
+    });
+
+    it("names nothing for a carried row it already held", () => {
+      LocalDatabase.putRow(TASK, {id: "t1", title: "Draft copy"});
+
+      const written = Deltas.apply(
+        {put_entity: {[TASK]: [{id: "t1", title: "From the page"}]}},
+        {insertOnly: true},
+      );
+
+      assert.deepStrictEqual(written, new Set());
+    });
+
+    it("names a carried row it filed", () => {
+      const written = Deltas.apply(
+        {put_entity: {[TASK]: [{id: "t1", title: "From the page"}]}},
+        {insertOnly: true},
+      );
+
+      assert.deepStrictEqual(written, new Set([`${TASK} t1`]));
+    });
+  });
+
+  describe("apply() - an op this build does not know", () => {
+    it("raises rather than passing it over", () => {
+      assert.throw(
+        () => Deltas.apply({rename_entity: {[TASK]: [{id: "t1"}]}}),
+        HologramRuntimeError,
+        "unknown sync delta op: rename_entity",
+      );
+    });
+  });
+});

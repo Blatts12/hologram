@@ -2,6 +2,7 @@ defmodule Mix.Tasks.Compile.HologramTest do
   use Hologram.Test.BasicCase, async: false
   import Mix.Tasks.Compile.Hologram
 
+  alias Hologram.Auth.RoleGrant
   alias Hologram.Commons.FileUtils
   alias Hologram.Commons.PLT
   alias Hologram.Commons.SerializationUtils
@@ -13,11 +14,14 @@ defmodule Mix.Tasks.Compile.HologramTest do
   alias Hologram.Compiler.Digraph
   alias Hologram.Compiler.IR
   alias Hologram.Compiler.Tracer
+  alias Hologram.Entity.Model
+  alias Hologram.Policy
   alias Hologram.Reflection
   alias Hologram.Test.Fixtures.Mix.Tasks.Compile.Hologram.Module1
   alias Hologram.Test.Fixtures.Mix.Tasks.Compile.Hologram.Module2
   alias Hologram.Test.Fixtures.Mix.Tasks.Compile.Hologram.Module3
   alias Hologram.Test.Fixtures.Mix.Tasks.Compile.Hologram.Module5
+  alias Hologram.Test.Fixtures.Page.Module8, as: PageModule8
 
   @lib_assets_dir Path.join(Reflection.root_dir(), "assets")
   @lib_package_json_path Path.join(@lib_assets_dir, "package.json")
@@ -52,6 +56,40 @@ defmodule Mix.Tasks.Compile.HologramTest do
   @encode_function_mfa {Hologram.Compiler.Encoder, :encode_elixir_function, 6}
 
   @num_pages Enum.count(Reflection.list_pages())
+
+  # This project's components include the ones the extractor and the validators exist to REFUSE -
+  # a capture that recurses, one that reads a field off an integer, a query on a type declaring no
+  # allow lines. A real app has none, so the task sweeps every component there and the build fails
+  # on the first mistake, which is the point. Here they are filtered by ASKING the builder rather
+  # than by listing modules, so a negative fixture added later joins the filter instead of breaking
+  # this suite.
+  defp buildable_component_modules do
+    entity_types = Reflection.list_entities()
+
+    Enum.filter(Reflection.list_components(), fn module ->
+      not declares_query_prop?(module) or buildable_queries?(module, entity_types)
+    end)
+  end
+
+  # A build refuses a component's queries two ways, and both mean unbuildable here: a validation
+  # objecting to the term (Hologram.CompileError), and a query stage refusing its own arguments
+  # while the extractor evaluates the capture (ArgumentError). The question is whether the build
+  # can produce this component's queries at all, not which tier said no.
+  defp buildable_queries?(module, entity_types) do
+    Compiler.build_queries([module], entity_types)
+    true
+  rescue
+    ArgumentError -> false
+    Hologram.CompileError -> false
+  end
+
+  # Only a component declaring a from_query prop can be refused - one without produces no terms,
+  # so neither the extractor nor the validations have anything to object to. Asking the cheap
+  # question first keeps this out of the suite's timing.
+  defp declares_query_prop?(module) do
+    Reflection.has_function?(module, :__props__, 0) and
+      Enum.any?(module.__props__(), fn {_name, _type, opts} -> opts[:from_query] end)
+  end
 
   # A page whose template holds a link to another page, and that page.
   @linked_page Hologram.Test.Fixtures.Page.Module2
@@ -91,13 +129,15 @@ defmodule Mix.Tasks.Compile.HologramTest do
   end
 
   # How many times the call graph and the module info PLT are dumped while the given function runs.
-  # PLT.dump/2 also writes the page digest PLT, once before the batches and once after each, through
-  # a private function whose local calls are counted and taken off.
+  # PLT.dump/2 also writes the page digest PLT, once before the batches and once after each, and the
+  # page windows and queries PLTs, once per compile, through private functions whose local calls are
+  # counted and taken off.
   defp count_dumps(fun) do
     counted = [
       {CallGraph, :dump, 2, [:call_count]},
       {PLT, :dump, 2, [:call_count]},
-      {Mix.Tasks.Compile.Hologram, :dump_page_digest_plt, 2, [:local, :call_count]}
+      {Mix.Tasks.Compile.Hologram, :dump_page_digest_plt, 2, [:local, :call_count]},
+      {Mix.Tasks.Compile.Hologram, :dump_sync_plts, 1, [:local, :call_count]}
     ]
 
     Enum.each(counted, fn {module, function, arity, flags} ->
@@ -107,13 +147,13 @@ defmodule Mix.Tasks.Compile.HologramTest do
     try do
       fun.()
 
-      [call_graph_dumps, plt_dumps, page_digest_dumps] =
+      [call_graph_dumps, plt_dumps, page_digest_dumps, sync_dumps] =
         Enum.map(counted, fn {module, function, arity, _flags} ->
           {:call_count, count} = :erlang.trace_info({module, function, arity}, :call_count)
           count
         end)
 
-      [call_graph_dumps, plt_dumps - page_digest_dumps]
+      [call_graph_dumps, plt_dumps - page_digest_dumps - 2 * sync_dumps]
     after
       Enum.each(counted, fn {module, function, arity, flags} ->
         :erlang.trace_pattern({module, function, arity}, false, flags)
@@ -309,6 +349,35 @@ defmodule Mix.Tasks.Compile.HologramTest do
     Tracer.trace({:on_module, File.read!(:code.which(module)), :none}, %Macro.Env{module: module})
   end
 
+  # Registering a fake app changes the data model for as long as it is loaded, and the compile
+  # task's validation caches what it resolves against that model - so the caches go with the app.
+  # Unloading alone leaves every later test reading a grant store resolved against the fixture.
+  # The modules of an app are listed from the beams in its ebin directory, so the given modules'
+  # bytecode is written into an ebin directory of the app's own on the code path.
+  defp load_entity_fixture_app(app, bytecode_by_module) do
+    root_dir = Path.join(System.tmp_dir!(), "hologram_compile_test_#{app}")
+    ebin_dir = Path.join([root_dir, to_string(app), "ebin"])
+    File.mkdir_p!(ebin_dir)
+
+    Enum.each(bytecode_by_module, fn {module, bytecode} ->
+      File.write!(Path.join(ebin_dir, "#{module}.beam"), bytecode)
+    end)
+
+    Code.append_path(ebin_dir)
+
+    modules = Enum.map(bytecode_by_module, fn {module, _bytecode} -> module end)
+    :ok = :application.load({:application, app, [modules: modules]})
+
+    on_exit(fn ->
+      :application.unload(app)
+      Code.delete_path(ebin_dir)
+      File.rm_rf!(root_dir)
+      RoleGrant.reset_resolution_cache()
+      Model.reset_caches()
+      Policy.reset_model_facts_cache()
+    end)
+  end
+
   defp setup_empty_assets_and_build_dirs(opts) do
     assets_dir = setup_empty_assets_dir()
     build_dir = setup_empty_build_dir()
@@ -342,6 +411,8 @@ defmodule Mix.Tasks.Compile.HologramTest do
     test_module_info_plt(opts)
     test_page_bundles(opts)
     test_page_digest_plt(opts)
+    test_page_windows_plt(opts)
+    test_queries_plt(opts)
     test_runtime_bundle(opts)
   end
 
@@ -445,6 +516,52 @@ defmodule Mix.Tasks.Compile.HologramTest do
     assert page_digest_items[Module1] =~ ~r/^[A-Z2-7]{8}$/
   end
 
+  defp test_page_windows_plt(opts) do
+    page_windows_plt_dump_path =
+      Path.join(opts[:build_dir], Reflection.page_windows_plt_dump_file_name())
+
+    assert File.exists?(page_windows_plt_dump_path)
+
+    page_windows_plt = PLT.start()
+    PLT.load(page_windows_plt, page_windows_plt_dump_path)
+    page_windows_items = PLT.get_all(page_windows_plt)
+
+    assert map_size(page_windows_items) == @num_pages
+
+    # The page renders a component whose prop reads a query, so it downloads that query's window.
+    assert [window_id] = page_windows_items[PageModule8]
+    assert window_id =~ ~r/^[0-9a-f]{32}$/
+  end
+
+  defp test_queries_plt(opts) do
+    queries_plt_dump_path = Path.join(opts[:build_dir], Reflection.queries_plt_dump_file_name())
+
+    assert File.exists?(queries_plt_dump_path)
+
+    queries_plt = PLT.start()
+    PLT.load(queries_plt, queries_plt_dump_path)
+    queries = PLT.get_all(queries_plt)
+
+    query_cache_keys =
+      queries
+      |> Map.keys()
+      |> Enum.sort()
+
+    assert query_cache_keys == [:entries, :prop_params, :windows]
+
+    # The two artifacts have to name one window between them: the page windows say which windows a
+    # page downloads, and this is where such an id resolves back to the term that fills it.
+    page_windows_plt = PLT.start()
+
+    PLT.load(
+      page_windows_plt,
+      Path.join(opts[:build_dir], Reflection.page_windows_plt_dump_file_name())
+    )
+
+    assert [window_id] = PLT.get!(page_windows_plt, PageModule8)
+    assert Map.has_key?(queries.windows, window_id)
+  end
+
   defp test_runtime_bundle(opts) do
     num_runtime_bundles =
       opts[:static_dir]
@@ -533,6 +650,7 @@ defmodule Mix.Tasks.Compile.HologramTest do
       assets_dir: @assets_dir,
       build_dir: @build_dir,
       build_lib_dir: @build_lib_dir,
+      component_modules: buildable_component_modules(),
       esbuild_bin_path: Path.join([test_node_modules_path, ".bin", "esbuild"]),
       js_dir: Path.join(@lib_assets_dir, "js"),
       node_modules_path: test_node_modules_path,
@@ -577,6 +695,77 @@ defmodule Mix.Tasks.Compile.HologramTest do
       System.put_env("HOLOGRAM_START", "1")
 
       assert run(opts) == :ok
+    end
+
+    test "validates the data model even when compilation is skipped", %{opts: opts} do
+      System.delete_env("HOLOGRAM_START")
+
+      {:module, _module, invalid_entity_bytecode, _result} =
+        defmodule InvalidEntityFixture do
+          use Hologram.Entity
+
+          relationship :owner, NonExistent.Module
+        end
+
+      # Register a fake loaded OTP app whose spec lists the invalid entity type module,
+      # so that data model discovery picks it up.
+      load_entity_fixture_app(:hologram_invalid_entity_fixture_app, [
+        {InvalidEntityFixture, invalid_entity_bytecode}
+      ])
+
+      expected_msg =
+        "invalid data model:\n  * relationship :owner in Mix.Tasks.Compile.HologramTest.InvalidEntityFixture targets NonExistent.Module, which is not an entity type module"
+
+      assert_error Hologram.CompileError, expected_msg, fn ->
+        run(opts)
+      end
+    end
+
+    test "fails the build on mapping errors even when compilation is skipped", %{opts: opts} do
+      System.delete_env("HOLOGRAM_START")
+
+      # Bare entity reflection functions instead of use Hologram.Entity - the
+      # entity validator now rejects this collision at declaration time, and this
+      # test exercises the task's mapping-error path behind it.
+      {:module, _module, invalid_mapping_entity_bytecode, _result} =
+        defmodule InvalidMappingEntityFixture do
+          @spec __is_hologram_entity__() :: boolean
+          def __is_hologram_entity__, do: true
+
+          @spec __attributes__() :: list(tuple)
+          def __attributes__, do: [{:owner_id, :string, []}]
+
+          @spec __policies__() :: list(tuple)
+          def __policies__, do: []
+
+          @spec __policy_sources__() :: list(module)
+          def __policy_sources__, do: []
+
+          @spec __relationships__() :: list(tuple)
+          def __relationships__, do: [{:owner, Hologram.Test.Fixtures.Entity.Module1, []}]
+
+          @spec __role_declarations__() :: list(tuple)
+          def __role_declarations__, do: []
+
+          @spec __roles__() :: list(tuple)
+          def __roles__, do: []
+        end
+
+      # Register a fake loaded OTP app whose spec lists the entity type module with the
+      # colliding declarations, so that data model discovery picks it up.
+      load_entity_fixture_app(:hologram_invalid_mapping_entity_fixture_app, [
+        {InvalidMappingEntityFixture, invalid_mapping_entity_bytecode}
+      ])
+
+      expected_msg =
+        normalize_newlines("""
+        colliding column names in Mix.Tasks.Compile.HologramTest.InvalidMappingEntityFixture - rename the declarations so that every derived column name is unique:
+          * column "owner_id" is derived from attribute :owner_id, relationship :owner\
+        """)
+
+      assert_error Hologram.CompileError, expected_msg, fn ->
+        run(opts)
+      end
     end
   end
 

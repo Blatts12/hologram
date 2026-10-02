@@ -2,12 +2,14 @@ defmodule Hologram.UI.Runtime do
   use Hologram.Component
   alias Hologram.Router.Helpers, as: RouterHelpers
 
-  prop :csrf_token, :string, from_context: {Hologram.Runtime, :csrf_token}
-  prop :initial_page?, :boolean, from_context: {Hologram.Runtime, :initial_page?}
-  prop :instance_id, :string, from_context: {Hologram.Runtime, :instance_id}
-  prop :page_digest, :string, from_context: {Hologram.Runtime, :page_digest}
-  prop :page_module, :module, from_context: {Hologram.Runtime, :page_module}
-  prop :page_mounted?, :boolean, from_context: {Hologram.Runtime, :page_mounted?}
+  prop :csrf_token, :string, from_context: {Hologram, :csrf_token}
+  prop :initial_page?, :boolean, from_context: {Hologram, :initial_page?}
+  prop :instance_id, :string, from_context: {Hologram, :instance_id}
+  prop :page_digest, :string, from_context: {Hologram, :page_digest}
+  prop :page_module, :module, from_context: {Hologram, :page_module}
+  prop :page_mounted?, :boolean, from_context: {Hologram, :page_mounted?}
+  prop :replica_id, :string, from_context: {Hologram, :replica_id}
+  prop :replica_token, :string, from_context: {Hologram, :replica_token}
 
   @impl Component
   def template do
@@ -20,6 +22,8 @@ defmodule Hologram.UI.Runtime do
         globalThis.Hologram.csrfToken = "{@csrf_token}";
         globalThis.Hologram.initialPageDigest = "{@page_digest}";
         globalThis.Hologram.instanceId = "{@instance_id}";
+        globalThis.Hologram.replicaId = "{@replica_id}";
+        globalThis.Hologram.replicaToken = "{@replica_token}";
 
         globalThis.Hologram.dispatchAction = function(actionName, target, params) \{
           globalThis.Hologram._pendingJsInteropActions.push([actionName, target, params]);
@@ -34,12 +38,15 @@ defmodule Hologram.UI.Runtime do
             const Type = deps.Type;
             
             return {
+              actorUserId: $ACTOR_USER_ID_JS_PLACEHOLDER,
               componentRegistry: $COMPONENT_REGISTRY_JS_PLACEHOLDER,
               pageModule: $PAGE_MODULE_JS_PLACEHOLDER,
               pageParams: $PAGE_PARAMS_JS_PLACEHOLDER,
               selfEchoes: $SELF_ECHOES_JS_PLACEHOLDER,
               subReceiptAdds: $SUB_RECEIPT_ADDS_JS_PLACEHOLDER,
-              subReceiptDrops: $SUB_RECEIPT_DROPS_JS_PLACEHOLDER
+              subReceiptDrops: $SUB_RECEIPT_DROPS_JS_PLACEHOLDER,
+              syncCounts: $SYNC_COUNTS_JS_PLACEHOLDER,
+              syncRows: $SYNC_ROWS_JS_PLACEHOLDER
             };
           };
         {/raw}

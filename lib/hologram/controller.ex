@@ -4,9 +4,11 @@ defmodule Hologram.Controller do
   require Logger
 
   alias Hologram.Assets.PageDigestRegistry
+  alias Hologram.Auth.Context
   alias Hologram.Compiler.Encoder
   alias Hologram.Component.Action
   alias Hologram.LiveReload
+  alias Hologram.Mutation
   alias Hologram.Page
   alias Hologram.Realtime
   alias Hologram.Realtime.Handshake
@@ -19,6 +21,7 @@ defmodule Hologram.Controller do
   alias Hologram.Runtime.CSRFProtection
   alias Hologram.Runtime.Deserializer
   alias Hologram.Runtime.PlugConnUtils
+  alias Hologram.Runtime.ReplicaIdentity
   alias Hologram.Runtime.Session
   alias Hologram.Server
   alias Hologram.Server.Middleware
@@ -30,6 +33,12 @@ defmodule Hologram.Controller do
   The body_params should contain %{"_json" => [version, data]} directly.
   """
   @type command_conn :: %Plug.Conn{body_params: map}
+
+  @typedoc """
+  A connection with a parsed JSON body carrying a batch of client writes.
+  A JSON object's keys land in body_params directly, so unlike a command there is no "_json" here.
+  """
+  @type mutation_conn :: %Plug.Conn{body_params: map}
 
   @doc """
   Applies a map of cookie operations to the given Plug.Conn struct.
@@ -130,8 +139,8 @@ defmodule Hologram.Controller do
 
   def build_page_data_payload({:redirect, to, page_module, params}) do
     %{
-      pageModule: Encoder.encode_term!(page_module),
-      pageParams: Encoder.encode_term!(params),
+      pageModule: Encoder.encode_client_term!(page_module),
+      pageParams: Encoder.encode_client_term!(params),
       to: to,
       type: "redirect"
     }
@@ -148,13 +157,16 @@ defmodule Hologram.Controller do
         tree: tree
       }) do
     %{
+      actorUserId: mount_data.actor_user_id,
       componentRegistry: mount_data.component_registry,
       pageDigest: page_digest,
       pageModule: mount_data.page_module,
       pageParams: mount_data.page_params,
-      selfEchoes: Encoder.encode_term!(self_echoes),
-      subReceiptAdds: Encoder.encode_term!(sub_receipt_adds),
-      subReceiptDrops: Encoder.encode_term!(sub_receipt_drops),
+      selfEchoes: Encoder.encode_client_term!(self_echoes),
+      subReceiptAdds: Encoder.encode_client_term!(sub_receipt_adds),
+      subReceiptDrops: Encoder.encode_client_term!(sub_receipt_drops),
+      syncCounts: mount_data.sync_counts,
+      syncRows: mount_data.sync_rows,
       tree: Renderer.encode_tree(tree),
       type: "page"
     }
@@ -340,7 +352,13 @@ defmodule Hologram.Controller do
         subscriptions: target_subscriptions
     }
 
-    middleware_server_struct = Middleware.run(server_struct, module.__middleware__())
+    # Middleware acts on behalf of the session for the same reason the command below does, so it
+    # runs under the same actor - the user the request ARRIVED with, since a step that changes
+    # identity changes it for the work after it rather than for its own execution.
+    middleware_server_struct =
+      Context.with_actor(server_struct.user_id, fn ->
+        Middleware.run(server_struct, module.__middleware__())
+      end)
 
     if middleware_server_struct.status do
       # Middleware produced a terminal response - skip the command and send it,
@@ -354,7 +372,13 @@ defmodule Hologram.Controller do
       |> send_response(middleware_server_struct)
       |> Plug.Conn.halt()
     else
-      command_result = module.command(name, params, middleware_server_struct)
+      # The handler reads the session user from its server struct - the actor context is set
+      # for the framework's sake, so that writes made during the command carry the acting user
+      # into machinery whose signatures cannot: creator role grants and grant gating.
+      command_result =
+        Context.with_actor(middleware_server_struct.user_id, fn ->
+          module.command(name, params, middleware_server_struct)
+        end)
 
       {processed_server_struct, next_action} =
         process_command_result(command_result, middleware_server_struct, target)
@@ -379,12 +403,12 @@ defmodule Hologram.Controller do
 
       flushed_server_struct = Realtime.flush_broadcasts(processed_server_struct)
 
-      {encode_status, encoded_next_action} = Encoder.encode_term(next_action)
+      {encode_status, encoded_next_action} = Encoder.encode_client_term(next_action)
       command_status = if encode_status == :ok, do: 1, else: 0
 
-      {:ok, encoded_self_echoes} = Encoder.encode_term(self_echoes)
-      {:ok, encoded_sub_receipt_adds} = Encoder.encode_term(sub_receipt_adds)
-      {:ok, encoded_sub_receipt_drops} = Encoder.encode_term(sub_receipt_drops)
+      {:ok, encoded_self_echoes} = Encoder.encode_client_term(self_echoes)
+      {:ok, encoded_sub_receipt_adds} = Encoder.encode_client_term(sub_receipt_adds)
+      {:ok, encoded_sub_receipt_drops} = Encoder.encode_client_term(sub_receipt_drops)
 
       conn
       |> apply_session_ops(flushed_server_struct.__meta__.session_ops)
@@ -425,15 +449,67 @@ defmodule Hologram.Controller do
     {conn_with_csrf_token, {masked_csrf_token, _unmasked_csrf_token}} =
       CSRFProtection.ensure_tokens(conn)
 
+    conn_with_session = Session.init(conn_with_csrf_token)
+
     instance_id = UUID.uuid4()
+    replica_id = UUID.uuid4()
+
+    # Minted before the lifecycle, from the session as it stands: a page whose middleware signs
+    # the visitor in gets a session-bound identity that keeps working in that session, and the
+    # next page load mints a user-bound one.
+    replica_token =
+      ReplicaIdentity.issue(
+        replica_id,
+        Session.get_session_id(conn_with_session),
+        Session.get_user_id(conn_with_session)
+      )
 
     renderer_opts = [
       csrf_token: masked_csrf_token,
       initial_page?: true,
-      instance_id: instance_id
+      instance_id: instance_id,
+      replica_id: replica_id,
+      replica_token: replica_token
     ]
 
-    handle_page_request(conn_with_csrf_token, page_module, params, [], renderer_opts)
+    handle_page_request(conn_with_session, page_module, params, [], renderer_opts)
+  end
+
+  @doc """
+  Handles an HTTP POST carrying a batch of client writes.
+
+  Checks the CSRF token and the instance cross-check exactly as a command request does, checks that
+  the batch's replica id is one the session presenting it was given, applies the batch on behalf of
+  the session, and answers with what became of it as JSON.
+
+  ## Parameters
+
+    * `initial_conn` - The Plug.Conn struct representing the HTTP request with parsed JSON body_params
+
+  ## Returns
+
+  The updated and halted Plug.Conn struct with the JSON response.
+  """
+  @spec handle_mutation_request(mutation_conn()) :: Plug.Conn.t()
+  def handle_mutation_request(initial_conn) do
+    conn =
+      initial_conn
+      |> PlugConnUtils.init_conn()
+      |> Session.init()
+
+    cond do
+      not validate_csrf_token(conn) ->
+        forbid(conn, "CSRF token validation failed")
+
+      not caller_owns_instance_id?(conn, conn.body_params["instance_id"]) ->
+        forbid(conn, "instance_id cross-check failed")
+
+      not replica_identity_verified?(conn) ->
+        forbid(conn, "replica identity check failed")
+
+      true ->
+        send_mutation_response(conn)
+    end
   end
 
   # Public for tests so they can drive a page render with a known instance_id
@@ -462,11 +538,23 @@ defmodule Hologram.Controller do
         |> Plug.Conn.halt()
 
       {:rendered, conn, result} ->
+        # Interpolated into the TREE and printed from there - substituting into the printed
+        # document instead would reach text and attribute values a page renders from what someone
+        # typed, where a token means nothing and an inserted value brings quotes that end the
+        # attribute it lands in.
+        #
+        # The mount data and the Realtime values go in ONE pass rather than two, so no value can
+        # be read as a token by a later substitution: a page param or a database row holding the
+        # text of another token would otherwise have that token honoured inside it.
+        replacements =
+          result.mount_data
+          |> Renderer.mount_replacements()
+          |> Map.merge(realtime_js(result))
+
         final_html =
-          result.html
-          |> Renderer.interpolate_self_echoes_js(result.self_echoes)
-          |> Renderer.interpolate_sub_receipt_adds_js(result.sub_receipt_adds)
-          |> Renderer.interpolate_sub_receipt_drops_js(result.sub_receipt_drops)
+          result.tree
+          |> Renderer.interpolate_js_in_tree(replacements)
+          |> Renderer.print_dom()
 
         conn
         |> Controller.html(final_html)
@@ -521,7 +609,7 @@ defmodule Hologram.Controller do
           expires_at
         )
 
-        {:ok, encoded_refreshed_receipts} = Encoder.encode_term(refreshed_receipts)
+        {:ok, encoded_refreshed_receipts} = Encoder.encode_client_term(refreshed_receipts)
 
         conn
         |> Controller.json(%{
@@ -568,9 +656,10 @@ defmodule Hologram.Controller do
         |> Plug.Conn.halt()
 
       {:rendered, lifecycle_conn, result} ->
-        # The three values the HTML path substitutes into the served document travel as payload
-        # fields here. Nothing is interpolated into the tree: this path renders no script to
-        # interpolate into, and the client reads the state from the payload before it patches.
+        # Everything the HTML path substitutes into the tree it prints travels as payload fields
+        # here. Nothing is interpolated into the tree: the client reads the state from the payload
+        # before it patches, and folding it into a script element's text would only mean escaping
+        # encoder output into the tree's encoding and unescaping it again on arrival.
         payload =
           build_page_data_payload(%{
             mount_data: result.mount_data,
@@ -618,6 +707,23 @@ defmodule Hologram.Controller do
       end
     end)
     |> Enum.unzip()
+  end
+
+  # The statement proves that the session presenting this replica id is the one it was minted for -
+  # a stranger who learned an id cannot spend its sequence numbers. It never decides the actor:
+  # that is still the session's user.
+  defp replica_identity_verified?(conn) do
+    raw = conn.body_params
+    token = raw["replica_token"]
+    replica_id = raw["replica_id"]
+
+    is_binary(token) and is_binary(replica_id) and
+      ReplicaIdentity.verify(
+        token,
+        replica_id,
+        Session.get_session_id(conn),
+        Session.get_user_id(conn)
+      ) == :ok
   end
 
   defp apply_subscription_deltas(%Server{__meta__: %{subscription_ops: ops}}) when ops == %{},
@@ -668,6 +774,15 @@ defmodule Hologram.Controller do
       Deserializer.deserialize(json)
 
     {instance_id, client_claimed_sub_keys}
+  end
+
+  defp forbid(conn, log_message) do
+    Logger.warning(log_message)
+
+    conn
+    |> Plug.Conn.put_status(403)
+    |> Controller.text("Forbidden")
+    |> Plug.Conn.halt()
   end
 
   defp get_csrf_token_from_header(conn) do
@@ -736,6 +851,24 @@ defmodule Hologram.Controller do
     Session.put_user_id(conn, user_id)
   end
 
+  # Transport only: what a batch becomes is Hologram.Mutation's, the spelling of its answer
+  # included - so that a repeated batch is answered with byte for byte what its first arrival
+  # produced.
+  defp send_mutation_response(conn) do
+    response =
+      case Mutation.run(conn.body_params, Server.from(conn)) do
+        {:ok, answer} ->
+          Controller.json(conn, answer)
+
+        {:invalid, message} ->
+          conn
+          |> Plug.Conn.put_status(400)
+          |> Controller.text(message)
+      end
+
+    Plug.Conn.halt(response)
+  end
+
   defp process_command_result(command_result, server_struct, default_target) do
     case command_result do
       %Server{next_action: %Action{target: nil} = action} = updated_server_struct ->
@@ -773,7 +906,9 @@ defmodule Hologram.Controller do
     }
 
     middleware_server_struct =
-      Middleware.run(server_struct, page_module.__middleware__())
+      Context.with_actor(server_struct.user_id, fn ->
+        Middleware.run(server_struct, page_module.__middleware__())
+      end)
 
     if middleware_server_struct.status do
       # Middleware answered before anything was rendered - skip the render, still applying the
@@ -785,7 +920,6 @@ defmodule Hologram.Controller do
     else
       %{
         component_registry: component_registry,
-        html: rendered_html,
         mount_data: mount_data,
         server_struct: rendered_server_struct,
         tree: rendered_tree
@@ -811,7 +945,6 @@ defmodule Hologram.Controller do
 
       result = %{
         component_registry: component_registry,
-        html: rendered_html,
         mount_data: mount_data,
         self_echoes: self_echoes,
         sub_receipt_adds: sub_receipt_adds,
@@ -833,6 +966,18 @@ defmodule Hologram.Controller do
   # Marks a response as carrying page data, so the client can tell one from a response a page's
   # middleware wrote itself. Status alone cannot: middleware is free to answer 200 with a body of
   # its own, which is a page's answer rather than a page.
+  # The three values the render could not settle: self echoes and the two receipt lists are a
+  # Realtime concern, worked out after the render and substituted by whoever serves the page.
+  # Encoded through the client encoder, which strips server-only attribute values - the same page
+  # served either way must not say more one way than the other.
+  defp realtime_js(result) do
+    %{
+      "$SELF_ECHOES_JS_PLACEHOLDER" => Encoder.encode_client_term!(result.self_echoes),
+      "$SUB_RECEIPT_ADDS_JS_PLACEHOLDER" => Encoder.encode_client_term!(result.sub_receipt_adds),
+      "$SUB_RECEIPT_DROPS_JS_PLACEHOLDER" => Encoder.encode_client_term!(result.sub_receipt_drops)
+    }
+  end
+
   defp send_page_data(conn, payload) do
     conn
     |> Plug.Conn.put_resp_header("hologram-page-data", "true")

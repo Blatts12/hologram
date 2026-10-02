@@ -54,6 +54,10 @@ defmodule Hologram.Reflection do
 
   @page_digest_plt_dump_file_name "page_digest.plt"
 
+  @page_windows_plt_dump_file_name "page_windows.plt"
+
+  @queries_plt_dump_file_name "queries.plt"
+
   @doc """
   Determines whether the given term is an alias.
 
@@ -360,6 +364,23 @@ defmodule Hologram.Reflection do
   def elixir_module?(term, ir_plt), do: PLT.member?(ir_plt, term) or elixir_module?(term)
 
   @doc """
+  Returns true if the given term is an entity type module (a module that has a "use Hologram.Entity" directive).
+  Otherwise false is returned.
+
+  ## Examples
+
+      iex> entity?(MyEntity)
+      true
+
+      iex> entity?(Hologram.Reflection)
+      false
+  """
+  @spec entity?(term) :: boolean
+  def entity?(term) do
+    elixir_module?(term) && has_function?(term, :__is_hologram_entity__, 0)
+  end
+
+  @doc """
   Returns true if the given term is an existing Erlang module, or false otherwise.
 
   An Erlang module is detected by the absence of the `__info__/1` function that the
@@ -473,6 +494,22 @@ defmodule Hologram.Reflection do
       {:ok, js_imports?} -> js_imports?
       :error -> js_imports?(module)
     end
+  end
+
+  @doc """
+  Returns true if the given term is a Hologram job type module, or false otherwise.
+
+  ## Examples
+
+      iex> job?(MyJob)
+      true
+
+      iex> job?(MyEntity)
+      false
+  """
+  @spec job?(term) :: boolean
+  def job?(term) do
+    elixir_module?(term) && has_function?(term, :__is_hologram_job__, 0)
   end
 
   @doc """
@@ -632,6 +669,32 @@ defmodule Hologram.Reflection do
   end
 
   @doc """
+  Lists Elixir modules which are Hologram entity types and that belong to any of the OTP apps in the project.
+
+  The framework's role grant store joins the data model only when an entity type is designated
+  as the user entity - without one there is nothing for its grants to point at.
+
+  Benchmark: https://github.com/bartblast/hologram/blob/master/benchmarks/elixir/reflection/list_entities_0/README.md
+  """
+  @spec list_entities() :: list(module)
+  def list_entities do
+    list_elixir_modules()
+    |> Enum.filter(&entity?/1)
+    |> reject_role_grant_without_user_entity()
+  end
+
+  @doc """
+  Lists Elixir modules which are Hologram entity types and that belong to the given OTP apps.
+  """
+  @spec list_entities(list(atom)) :: list(module)
+  def list_entities(apps) do
+    apps
+    |> list_elixir_modules()
+    |> Enum.filter(&entity?/1)
+    |> reject_role_grant_without_user_entity()
+  end
+
+  @doc """
   Lists loaded OTP applications.
 
   ## Examples
@@ -690,6 +753,14 @@ defmodule Hologram.Reflection do
   @spec list_protocol_implementations(module, PLT.t()) :: list(module)
   def list_protocol_implementations(protocol, module_info_plt) do
     PLT.keys(module_info_plt, %{implemented_protocol: protocol})
+  end
+
+  @doc """
+  Lists Elixir modules which are Hologram global role modules and that belong to any of the OTP apps in the project.
+  """
+  @spec list_roles() :: list(module)
+  def list_roles do
+    Enum.filter(list_elixir_modules(), &role?/1)
   end
 
   @doc """
@@ -837,6 +908,14 @@ defmodule Hologram.Reflection do
   end
 
   @doc """
+  Returns the file name of the dump of the page windows PLT.
+  """
+  @spec page_windows_plt_dump_file_name() :: String.t()
+  def page_windows_plt_dump_file_name do
+    @page_windows_plt_dump_file_name
+  end
+
+  @doc """
   Determines the project's Phoenix endpoint module - the module implementing
   the `Phoenix.Endpoint` behaviour that is configured in the project OTP
   application's environment.
@@ -844,6 +923,23 @@ defmodule Hologram.Reflection do
   @spec phoenix_endpoint :: module | nil
   def phoenix_endpoint do
     phoenix_endpoint_for_app(otp_app())
+  end
+
+  @doc """
+  Returns true if the given term is a policy module (a module that has a "use Hologram.Policy" directive).
+  Otherwise false is returned.
+
+  ## Examples
+
+      iex> policy?(MyApp.Policies.Editable)
+      true
+
+      iex> policy?(Hologram.Reflection)
+      false
+  """
+  @spec policy?(term) :: boolean
+  def policy?(term) do
+    elixir_module?(term) && has_function?(term, :__is_hologram_policy__, 0)
   end
 
   @doc """
@@ -898,6 +994,14 @@ defmodule Hologram.Reflection do
   @spec protocol_implementation?(module) :: boolean
   def protocol_implementation?(module) do
     has_function?(module, :__impl__, 1)
+  end
+
+  @doc """
+  Returns the file name of the dump of the registered queries PLT.
+  """
+  @spec queries_plt_dump_file_name() :: String.t()
+  def queries_plt_dump_file_name do
+    @queries_plt_dump_file_name
   end
 
   @doc """
@@ -958,6 +1062,23 @@ defmodule Hologram.Reflection do
   @spec root_dir() :: String.t()
   def root_dir do
     Path.dirname(Mix.Project.deps_path())
+  end
+
+  @doc """
+  Returns true if the given term is a global role module (a module that has a "use Hologram.Role" directive).
+  Otherwise false is returned.
+
+  ## Examples
+
+      iex> role?(MyApp.Roles.Admin)
+      true
+
+      iex> role?(Hologram.Reflection)
+      false
+  """
+  @spec role?(term) :: boolean
+  def role?(term) do
+    elixir_module?(term) && has_function?(term, :__is_hologram_role__, 0)
   end
 
   @doc """
@@ -1022,6 +1143,30 @@ defmodule Hologram.Reflection do
     Mix.Project.apps_paths() != nil or
       Mix.Project.parent_umbrella_project_file() != nil or
       Enum.any?(Mix.Dep.cached(), & &1.opts[:in_umbrella])
+  end
+
+  @doc """
+  Returns the entity type module designated as the project's user entity type, or nil when no entity type is designated.
+  """
+  @spec user_entity() :: module | nil
+  def user_entity do
+    Enum.find(list_entities(), &user_entity?/1)
+  end
+
+  @doc """
+  Returns true if the given term is the entity type module designated as the project's user entity type, or false otherwise.
+
+  ## Examples
+
+      iex> user_entity?(MyUser)
+      true
+
+      iex> user_entity?(MyPost)
+      false
+  """
+  @spec user_entity?(term) :: boolean
+  def user_entity?(term) do
+    entity?(term) && has_function?(term, :__is_hologram_user_entity__, 0)
   end
 
   defp apps_depending_on_hologram do
@@ -1266,5 +1411,19 @@ defmodule Hologram.Reflection do
   defp project_apps do
     Application.ensure_loaded(otp_app())
     list_loaded_otp_apps() -- [:hex]
+  end
+
+  # RoleGrant declares itself an entity type, so the sweep always finds it - what is in question
+  # is whether it STAYS. It does only when the project designates a user entity, without which
+  # there is nothing for its grants to point at.
+  #
+  # The check runs over the entity types already swept, never through user_entity/0 - that
+  # function lists entity types itself, which would recurse.
+  defp reject_role_grant_without_user_entity(entity_types) do
+    if Enum.any?(entity_types, &user_entity?/1) do
+      entity_types
+    else
+      List.delete(entity_types, Hologram.Auth.RoleGrant)
+    end
   end
 end

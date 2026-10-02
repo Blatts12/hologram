@@ -1,0 +1,225 @@
+defmodule Hologram.Mutation.RecordTest do
+  use Hologram.Test.DatabaseCase, async: true
+
+  import Hologram.Mutation.Record
+
+  alias Hologram.DB.Codec
+  alias Hologram.DB.Connection
+  alias Hologram.Entity
+
+  @answer %{"reason" => "Type.atom(\"not_found\")", "status" => "rejected", "write" => 0}
+  @replica_id "0192b1e9-7a2b-7c3d-8e4f-5a6b7c8d9e0f"
+  @envelope %{"replica_id" => "0192b1e9-7a2b-7c3d-8e4f-5a6b7c8d9e0f", "seq" => 1, "writes" => []}
+  @other_replica_id "0192b1e9-7a2b-7c3d-8e4f-5a6b7c8d9e10"
+
+  defp claim(replica_id, seq, actor_id \\ nil, model_hash \\ "h") do
+    Connection.transaction(fn -> claim!(replica_id, seq, actor_id, model_hash) end)
+  end
+
+  defp confirmed(replica_id, seq) do
+    Connection.transaction(fn ->
+      claim!(replica_id, seq, nil, "h")
+      complete!(replica_id, seq, %{"dropped" => %{}, "status" => "confirmed"})
+    end)
+  end
+
+  defp rows do
+    statement = """
+    SELECT "replica_id", "seq", "actor_id", "model_hash", "result", "envelope", "answered_at"
+    FROM "hologram_system"."mutation"
+    ORDER BY "replica_id", "seq"
+    """
+
+    {:ok, %Postgrex.Result{rows: rows}} = Connection.query(statement)
+
+    Enum.map(rows, fn [replica_id, seq, actor_id, model_hash, result, envelope, answered_at] ->
+      %{
+        actor_id: Codec.decode(actor_id, :uuid),
+        answered_at: answered_at,
+        replica_id: replica_id,
+        envelope: envelope,
+        model_hash: model_hash,
+        result: result,
+        seq: seq
+      }
+    end)
+  end
+
+  describe "claim!/4" do
+    test "claims the record for a batch, with no answer yet" do
+      assert claim(@replica_id, 1) == {:ok, :ok}
+
+      assert [row] = rows()
+      assert %{actor_id: nil, replica_id: @replica_id, model_hash: "h", result: nil, seq: 1} = row
+      assert row.envelope == nil
+      assert %DateTime{} = row.answered_at
+    end
+
+    test "records the user who sent the batch" do
+      user_id = Entity.generate_id()
+
+      claim(@replica_id, 1, user_id)
+
+      assert [%{actor_id: ^user_id}] = rows()
+    end
+
+    test "claims each sequence number of one replica on its own" do
+      claim(@replica_id, 1)
+      claim(@replica_id, 2)
+
+      assert Enum.map(rows(), & &1.seq) == [1, 2]
+    end
+
+    test "claims one sequence number for each replica on its own" do
+      claim(@replica_id, 1)
+      claim(@other_replica_id, 1)
+
+      assert Enum.map(rows(), & &1.replica_id) == [@replica_id, @other_replica_id]
+    end
+
+    test "rolls the transaction back with :duplicate when the batch is already recorded" do
+      claim(@replica_id, 1)
+
+      assert claim(@replica_id, 1) == {:error, :duplicate}
+
+      assert length(rows()) == 1
+    end
+  end
+
+  describe "complete!/3" do
+    test "records the answer the batch got" do
+      claim(@replica_id, 1)
+
+      assert complete!(@replica_id, 1, %{"status" => "confirmed", "dropped" => %{}}) == :ok
+
+      assert [%{result: %{"status" => "confirmed", "dropped" => %{}}}] = rows()
+    end
+
+    test "answers only the batch it names" do
+      claim(@replica_id, 1)
+      claim(@replica_id, 2)
+
+      complete!(@replica_id, 2, %{"status" => "confirmed"})
+
+      assert Enum.map(rows(), & &1.result) == [nil, %{"status" => "confirmed"}]
+    end
+  end
+
+  describe "find/2" do
+    test "returns the sender and the answer the batch got" do
+      user_id = Entity.generate_id()
+
+      claim(@replica_id, 1, user_id)
+      complete!(@replica_id, 1, %{"status" => "confirmed"})
+
+      assert find(@replica_id, 1) == %{
+               actor_id: user_id,
+               result: %{"status" => "confirmed"}
+             }
+    end
+
+    test "returns nil for a batch with no record" do
+      assert find(@replica_id, 1) == nil
+    end
+
+    test "returns no answer for a batch claimed but not answered" do
+      claim(@replica_id, 1)
+
+      assert find(@replica_id, 1) == %{actor_id: nil, result: nil}
+    end
+
+    test "returns the answer a refused batch got" do
+      user_id = Entity.generate_id()
+
+      refuse!(@replica_id, 1, user_id, "h", @envelope, @answer)
+
+      assert find(@replica_id, 1) == %{actor_id: user_id, result: @answer}
+    end
+
+    test "returns nothing of another batch's record" do
+      claim(@replica_id, 1)
+      complete!(@replica_id, 1, %{"status" => "confirmed"})
+
+      assert find(@replica_id, 2) == nil
+      assert find(@other_replica_id, 1) == nil
+    end
+  end
+
+  describe "highest_confirmed_seq/1" do
+    test "returns the highest sequence number the replica has had confirmed" do
+      confirmed(@replica_id, 1)
+      confirmed(@replica_id, 3)
+      confirmed(@replica_id, 2)
+
+      assert highest_confirmed_seq(@replica_id) == 3
+    end
+
+    test "returns nothing for a replica with no confirmed batch" do
+      assert highest_confirmed_seq(@replica_id) == nil
+    end
+
+    # A refused batch changed nothing, so no frame can be carrying its effects - counting it would
+    # claim a write is in the database that was never made.
+    test "passes over a refused batch above a confirmed one" do
+      confirmed(@replica_id, 1)
+      refuse!(@replica_id, 2, Entity.generate_id(), "h", @envelope, @answer)
+
+      assert highest_confirmed_seq(@replica_id) == 1
+    end
+
+    # A claim with no answer is a batch still being applied, in a transaction nothing outside can
+    # see - and this one runs outside it.
+    test "passes over a batch claimed but not yet answered" do
+      confirmed(@replica_id, 1)
+      claim(@replica_id, 2)
+
+      assert highest_confirmed_seq(@replica_id) == 1
+    end
+
+    test "counts only the batches of the replica it names" do
+      confirmed(@replica_id, 1)
+      confirmed(@other_replica_id, 7)
+
+      assert highest_confirmed_seq(@replica_id) == 1
+    end
+  end
+
+  describe "refuse!/6" do
+    test "keeps a refused batch with what it carried and the answer it got" do
+      user_id = Entity.generate_id()
+
+      assert refuse!(@replica_id, 1, user_id, "h", @envelope, @answer) == :ok
+
+      assert [row] = rows()
+
+      assert %{
+               actor_id: ^user_id,
+               replica_id: @replica_id,
+               envelope: @envelope,
+               model_hash: "h",
+               result: @answer,
+               seq: 1
+             } = row
+
+      assert %DateTime{} = row.answered_at
+    end
+
+    test "keeps the first of two refusals of one batch" do
+      user_id = Entity.generate_id()
+
+      refuse!(@replica_id, 1, user_id, "h", @envelope, @answer)
+      refuse!(@replica_id, 1, user_id, "h", @envelope, %{@answer | "write" => 1})
+
+      assert [%{result: @answer}] = rows()
+    end
+
+    test "keeps a refusal beside a landed batch's record" do
+      claim(@replica_id, 1)
+      complete!(@replica_id, 1, %{"status" => "confirmed"})
+
+      refuse!(@replica_id, 2, Entity.generate_id(), "h", @envelope, @answer)
+
+      assert Enum.map(rows(), & &1.envelope) == [nil, @envelope]
+    end
+  end
+end

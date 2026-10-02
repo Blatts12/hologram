@@ -3,12 +3,21 @@ defmodule Hologram.Realtime.SSE do
 
   alias Hologram.Compiler.Encoder
   alias Hologram.Component.Action
+  alias Hologram.DB.Oplog
+  alias Hologram.Mutation.Record
+  alias Hologram.Policy.Edges
   alias Hologram.Realtime
   alias Hologram.Realtime.Handshake
   alias Hologram.Realtime.Receipt
   alias Hologram.Realtime.SSE.Adapters
   alias Hologram.Realtime.SubscriptionRegistry
+  alias Hologram.Reflection
+  alias Hologram.Runtime.ReplicaIdentity
   alias Hologram.Runtime.Session
+  alias Hologram.Sync.Catchup
+  alias Hologram.Sync.Frame
+  alias Hologram.Sync.Handshake, as: SyncHandshake
+  alias Hologram.Sync.Session, as: SyncSession
 
   # Read only when the host app enables the test seams - see maybe_delay_attach/1.
   @attach_delay_cookie "hologram_sse_attach_delay_ms"
@@ -36,7 +45,7 @@ defmodule Hologram.Realtime.SSE do
   """
   @spec encode_action_envelope(integer, Action.t()) :: String.t()
   def encode_action_envelope(id, %Action{} = action) do
-    {:ok, data} = Encoder.encode_term(action)
+    {:ok, data} = Encoder.encode_client_term(action)
     "event: action\nid: #{id}\ndata: #{data}\n\n"
   end
 
@@ -48,7 +57,7 @@ defmodule Hologram.Realtime.SSE do
   @spec encode_add_sub_receipts_envelope(integer, [{any, String.t(), String.t()}]) ::
           String.t()
   def encode_add_sub_receipts_envelope(id, receipts) do
-    {:ok, data} = Encoder.encode_term(receipts)
+    {:ok, data} = Encoder.encode_client_term(receipts)
     "event: add_sub_receipts\nid: #{id}\ndata: #{data}\n\n"
   end
 
@@ -62,7 +71,7 @@ defmodule Hologram.Realtime.SSE do
   """
   @spec encode_broadcast_envelope(integer, atom, map, [String.t()]) :: String.t()
   def encode_broadcast_envelope(id, action_name, params, cids) do
-    {:ok, data} = Encoder.encode_term({action_name, params, cids})
+    {:ok, data} = Encoder.encode_client_term({action_name, params, cids})
     "event: broadcast\nid: #{id}\ndata: #{data}\n\n"
   end
 
@@ -83,7 +92,7 @@ defmodule Hologram.Realtime.SSE do
   """
   @spec encode_drop_sub_receipts_envelope(integer, [{any, String.t()}]) :: String.t()
   def encode_drop_sub_receipts_envelope(id, keys) do
-    {:ok, data} = Encoder.encode_term(keys)
+    {:ok, data} = Encoder.encode_client_term(keys)
     "event: drop_sub_receipts\nid: #{id}\ndata: #{data}\n\n"
   end
 
@@ -104,7 +113,7 @@ defmodule Hologram.Realtime.SSE do
   @spec encode_refresh_sub_receipts_envelope(integer, [{any, String.t(), String.t()}]) ::
           String.t()
   def encode_refresh_sub_receipts_envelope(id, receipts) do
-    {:ok, data} = Encoder.encode_term(receipts)
+    {:ok, data} = Encoder.encode_client_term(receipts)
     "event: refresh_sub_receipts\nid: #{id}\ndata: #{data}\n\n"
   end
 
@@ -152,6 +161,30 @@ defmodule Hologram.Realtime.SSE do
     end
   end
 
+  # Public so tests can read what a client said without standing up a stream to say it on.
+  @doc false
+  @spec greeting(Plug.Conn.t()) :: map
+  def greeting(conn) do
+    conn = Plug.Conn.fetch_query_params(conn)
+
+    case conn.query_params do
+      %{"model_hash" => model_hash, "page" => page, "protocol_version" => protocol_version} =
+          params ->
+        %{
+          cursor: params["cursor"],
+          model_hash: model_hash,
+          page: page_module(page),
+          protocol_version: parse_protocol_version(protocol_version),
+          replica_id: params["replica_id"],
+          replica_token: params["replica_token"]
+        }
+
+      # A client built before any of this existed says nothing about sync, and keeps its stream.
+      _no_greeting ->
+        %{}
+    end
+  end
+
   # No `connection` header: HTTP/2 forbids connection-specific header fields and treats a
   # response carrying one as malformed, which WebKit enforces by dropping the stream. The
   # header buys nothing where it is legal either, since HTTP/1.1 keeps connections alive by
@@ -173,7 +206,7 @@ defmodule Hologram.Realtime.SSE do
   @doc false
   @spec process_message(Plug.Conn.t(), term | nil, term | nil, keyword) ::
           {:cont, Plug.Conn.t()}
-          | {:cont, Plug.Conn.t(), term | nil, term | nil}
+          | {:cont, Plug.Conn.t(), term | nil, term | nil, pid | nil}
           | {:halt, Plug.Conn.t()}
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def process_message(conn, session_id, user_id, opts \\ []) do
@@ -189,6 +222,42 @@ defmodule Hologram.Realtime.SSE do
       {:add_sub_receipts, receipts} ->
         id = System.unique_integer([:positive, :monotonic])
         chunk_data = encode_add_sub_receipts_envelope(id, receipts)
+
+        case Plug.Conn.chunk(conn, chunk_data) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _reason} -> {:halt, conn}
+        end
+
+      {:sync_deltas, cursor, deltas, applied_seq} ->
+        id = System.unique_integer([:positive, :monotonic])
+        chunk_data = Frame.encode_deltas_envelope(id, cursor, deltas, applied_seq)
+
+        case Plug.Conn.chunk(conn, chunk_data) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _reason} -> {:halt, conn}
+        end
+
+      {:sync_reload, reason} ->
+        id = System.unique_integer([:positive, :monotonic])
+        chunk_data = Frame.encode_reload_envelope(id, reason)
+
+        case Plug.Conn.chunk(conn, chunk_data) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _reason} -> {:halt, conn}
+        end
+
+      {:sync_resync, reason} ->
+        id = System.unique_integer([:positive, :monotonic])
+        chunk_data = Frame.encode_resync_envelope(id, reason)
+
+        case Plug.Conn.chunk(conn, chunk_data) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _reason} -> {:halt, conn}
+        end
+
+      {:sync_synced, scope, cursor} ->
+        id = System.unique_integer([:positive, :monotonic])
+        chunk_data = Frame.encode_synced_envelope(id, scope, cursor)
 
         case Plug.Conn.chunk(conn, chunk_data) do
           {:ok, conn} -> {:cont, conn}
@@ -299,8 +368,14 @@ defmodule Hologram.Realtime.SSE do
         SubscriptionRegistry.update_identity(instance_id, new_session_id, new_user_id)
 
         case maybe_drop_identity_change_bindings(conn, instance_id, user_id, new_user_id) do
-          {:cont, conn} -> {:cont, conn, new_session_id, new_user_id}
-          {:halt, conn} -> {:halt, conn}
+          {:cont, conn} ->
+            {conn, sync_session} =
+              restart_syncing(conn, Keyword.get(opts, :sync_session), new_user_id)
+
+            {:cont, conn, new_session_id, new_user_id, sync_session}
+
+          {:halt, conn} ->
+            {:halt, conn}
         end
 
       :refresh_receipts ->
@@ -355,6 +430,19 @@ defmodule Hologram.Realtime.SSE do
     end
   end
 
+  # Public so tests can check what a greeting's identity is worth without standing up a stream.
+  @doc false
+  @spec verified_replica_id(map, Plug.Conn.t(), term | nil) :: String.t() | nil
+  def verified_replica_id(greeting, conn, user_id) do
+    replica_id = greeting[:replica_id]
+    token = greeting[:replica_token]
+
+    if is_binary(replica_id) and is_binary(token) and
+         ReplicaIdentity.verify(token, replica_id, Session.get_session_id(conn), user_id) == :ok do
+      replica_id
+    end
+  end
+
   @doc """
   Opens an SSE stream on the given conn and enters a message-pump loop that
   runs until the connection is closed.
@@ -403,14 +491,19 @@ defmodule Hologram.Realtime.SSE do
         # exist. Anything published in the meantime waits in the mailbox and is applied
         # once the pump starts, by which point the attach has folded in the handshake's
         # own bindings.
-        conn
-        |> maybe_subscribe_to_live_reload()
-        |> subscribe_to_announce_topics()
-        |> maybe_delay_attach()
-        |> attach_validated_subscriptions(validated_bindings)
-        |> prepare()
-        |> watch_client(adapter)
-        |> message_pump(session_id, user_id, message_pump_opts)
+        {conn, sync_session} =
+          conn
+          |> maybe_subscribe_to_live_reload()
+          |> subscribe_to_announce_topics()
+          |> maybe_delay_attach()
+          |> attach_validated_subscriptions(validated_bindings)
+          |> prepare()
+          |> watch_client(adapter)
+          |> start_syncing(user_id)
+
+        message_pump(conn, session_id, user_id, [
+          {:sync_session, sync_session} | message_pump_opts
+        ])
 
       :error ->
         reject_4xx(conn, "Handshake redemption failed")
@@ -705,11 +798,37 @@ defmodule Hologram.Realtime.SSE do
       {:cont, conn} ->
         message_pump(conn, session_id, user_id, opts)
 
-      {:cont, conn, new_session_id, new_user_id} ->
+      # A change of identity replaces the sync session as well as naming who the client now is,
+      # so what the next turn is handed has to carry the new one.
+      {:cont, conn, new_session_id, new_user_id, new_sync_session} ->
+        opts = Keyword.put(opts, :sync_session, new_sync_session)
+
         message_pump(conn, new_session_id, new_user_id, opts)
 
       {:halt, conn} ->
         conn
+    end
+  end
+
+  # What the client says about its own sync arrives on the stream's own request rather than
+  # through the handshake stash: the page is its claim either way (what it names decides which
+  # windows are kept, never what it may see of them), and the stash is a flat tuple gossiped
+  # between nodes, which is not a shape to grow for a claim that needs no protecting.
+  # A client arriving for the first time holds nothing and is simply filled. One coming back is
+  # either told what it missed, or told to let go of what it holds - and is then filled the same
+  # way a first arrival is. Deciding it here rather than in the session keeps the session a reader
+  # of rounds and nothing else, and puts the answer beside the reload notice it stands next to.
+  defp gap(nil, _user_id), do: {nil, nil}
+
+  defp gap(cursor, user_id) do
+    case Catchup.gap(cursor, user_id) do
+      {:ok, effects, grants_then} ->
+        {effects, grants_then}
+
+      {:full_resync, reason} ->
+        send(self(), {:sync_resync, reason})
+
+        {nil, nil}
     end
   end
 
@@ -729,6 +848,21 @@ defmodule Hologram.Realtime.SSE do
     |> Plug.Conn.halt()
   end
 
+  # A page this build has never compiled stays the string it arrived as, which matches no window
+  # and leaves the client with an empty session rather than an error.
+  defp page_module(page) do
+    String.to_existing_atom("Elixir." <> page)
+  rescue
+    ArgumentError -> page
+  end
+
+  defp parse_protocol_version(protocol_version) do
+    case Integer.parse(protocol_version) do
+      {version, ""} -> version
+      _not_a_version -> protocol_version
+    end
+  end
+
   defp schedule_heartbeat(heartbeat_interval_ms) do
     Process.send_after(self(), :heartbeat, heartbeat_interval_ms)
   end
@@ -740,5 +874,79 @@ defmodule Hologram.Realtime.SSE do
   defp watch_client(conn, adapter) do
     :ok = adapter.watch(conn)
     conn
+  end
+
+  # The session is linked, so it goes when the connection does - what a client holds is only
+  # worth keeping while there is a client to tell about it. Handed back so the connection can
+  # reach it later: who the client IS can change while the stream stays open, and the session
+  # decides what that client may see.
+  #
+  # `resume?` is false for a client being filled again from nothing, which is what a change of
+  # identity leaves it needing - the place it named belongs to a store it has been told to drop.
+  defp start_syncing(conn, user_id, resume? \\ true) do
+    greeting = greeting(conn)
+
+    case SyncHandshake.check(greeting) do
+      {:sync, page, cursor} ->
+        # Named rather than written inline as `resume? && gap(cursor, user_id)`: that answers
+        # FALSE when it does not resume, and a session reads "no gap" from nil alone - anything
+        # else and it sets about replaying something it cannot walk.
+        {gap, grants_then} = if resume?, do: gap(cursor, user_id), else: {nil, nil}
+
+        # What a rule reads besides its own row, so a row the gap never names can be judged again
+        # when the row DECIDING it moved. Only for a returning client - one arriving with nothing
+        # is sent every row it may see, so there is nothing to reach back for.
+        #
+        # Derived per resume rather than kept, for the reason `Fanout.route/2` derives per batch:
+        # it follows the compiled model, which a live reload can change under a running node. A
+        # connect already fills every window, which is where this cost belongs - never a per-frame
+        # path.
+        edges = if gap, do: Edges.derive(Reflection.list_entities())
+
+        replica_id = verified_replica_id(greeting, conn, user_id)
+
+        # Read HERE rather than in the session, so the database work of starting a stream stays in
+        # the process that already does it - and so the session is a state machine over what it is
+        # handed rather than a reader of its own.
+        applied_seq = replica_id && Record.highest_confirmed_seq(replica_id)
+
+        {:ok, session} =
+          SyncSession.start_link(
+            actor_user_id: user_id,
+            applied_seq: applied_seq,
+            client: self(),
+            edges: edges,
+            fill_place: {Oplog.current_xmin(), 0},
+            gap: gap,
+            grants_then: grants_then,
+            page: page,
+            replica_id: replica_id
+          )
+
+        {conn, session}
+
+      {:reload, reason} ->
+        send(self(), {:sync_reload, reason})
+
+        {conn, nil}
+
+      :no_sync ->
+        {conn, nil}
+    end
+  end
+
+  # A client whose identity changed holds rows it was given as someone else, and the session
+  # serving it filters by the actor it was started with. Neither can be corrected in place: the
+  # store is dropped through the door the client already has, and a session is started for who it
+  # is now. Told to drop BEFORE the new one begins filling, since a self-send is ahead of anything
+  # the new session will queue behind it.
+  defp restart_syncing(conn, nil, _new_user_id), do: {conn, nil}
+
+  defp restart_syncing(conn, session, new_user_id) do
+    send(self(), {:sync_resync, :identity})
+
+    :ok = GenServer.stop(session, :normal)
+
+    start_syncing(conn, new_user_id, false)
   end
 end

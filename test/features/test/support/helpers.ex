@@ -3,9 +3,13 @@ defmodule HologramFeatureTests.Helpers do
   import Hologram.Commons.Guards, only: [is_regex: 1]
   import Hologram.Test.FeatureHelpers, only: [visit: 2, visit: 3]
 
+  alias Hologram.DB
+  alias Hologram.DB.Connection
   alias Hologram.Realtime
   alias Hologram.Realtime.SSE
   alias Hologram.Realtime.SubscriptionRegistry
+  alias Hologram.Sync.Session
+  alias HologramFeatureTests.Entities.Todo
   alias HologramFeatureTestsWeb.Plugs.SlowPageBundle
   alias Wallaby.Browser
   alias Wallaby.Element
@@ -14,6 +18,10 @@ defmodule HologramFeatureTests.Helpers do
   alias Wallaby.StaleReferenceError
 
   @max_wait_time Application.compile_env(:wallaby, :max_wait_time, 3_000)
+
+  # What a GenServer records about the function that started it, which is how a sync session is
+  # told apart from every other process the node is running.
+  @sync_session_initial_call {Session, :init, 1}
 
   def assert_client_error(session, expected_module, expected_msg, fun) do
     fun.()
@@ -164,6 +172,117 @@ defmodule HologramFeatureTests.Helpers do
     |> assert_text(regex)
 
     parent
+  end
+
+  @doc """
+  Blocks until this browser has written everything it holds to durable storage, then returns the
+  `session`.
+
+  What a test can act on afterwards: the rows a frame delivered, the place they are dated at and
+  the clock are all committed, so a page load made after this reads them back rather than racing a
+  transaction that has not finished. Without it a test that reloads immediately can find an empty
+  database and conclude, wrongly, that nothing was kept.
+
+  Answers `nil` rather than zero for a page whose runtime has not attached its window yet, which is
+  what keeps the wait waiting instead of passing before the browser could have written anything.
+  Raises if writes are still in flight after `@max_wait_time`.
+  """
+  @spec await_durable_writes(Wallaby.Session.t(), integer | nil) :: Wallaby.Session.t()
+  def await_durable_writes(session, start_time \\ nil) do
+    start_time = start_time || current_time()
+
+    script = "return globalThis.Hologram.durability?.pendingWrites() ?? null;"
+
+    case script_result(session, script) do
+      0 ->
+        session
+
+      pending ->
+        if timed_out?(start_time) do
+          raise Wallaby.ExpectationNotMetError,
+                "Timed out waiting for the browser's durable writes, #{inspect(pending)} in flight"
+        end
+
+        :timer.sleep(50)
+        await_durable_writes(session, start_time)
+    end
+  end
+
+  @doc """
+  Blocks until the client's write queue holds at least one refused batch, and returns the
+  refusals as the queue's own window reads them.
+
+  The deterministic point at which a rollback has happened - asserting "the row appeared and then
+  vanished" would race the round trip in whichever direction the machine happened to be faster.
+  Raises if nothing is refused within `@max_wait_time`.
+  """
+  @spec await_rejected_writes(Wallaby.Session.t(), integer | nil) :: list
+  def await_rejected_writes(session, start_time \\ nil) do
+    start_time = start_time || current_time()
+
+    case script_result(session, "return globalThis.Hologram.writes.rejected();") do
+      [] ->
+        if timed_out?(start_time) do
+          raise Wallaby.ExpectationNotMetError,
+                "Timed out waiting for the client to refuse a write batch"
+        end
+
+        :timer.sleep(50)
+        await_rejected_writes(session, start_time)
+
+      rejected ->
+        rejected
+    end
+  end
+
+  @doc """
+  Blocks until the server is running exactly `count` sync sessions for `replica_id`, and returns
+  the count.
+
+  Scoped to one replica because the number is what this browser costs the server: one session for
+  however many tabs it has open, where every tab used to bring its own. Unscoped it would be a
+  claim about every browser the suite has ever connected, and a session outlives its stream by a
+  moment - so it is polled rather than read once.
+  """
+  @spec await_sync_sessions(String.t(), non_neg_integer, integer | nil) :: non_neg_integer
+  def await_sync_sessions(replica_id, count, start_time \\ nil) do
+    start_time = start_time || current_time()
+    running = sync_session_count(replica_id)
+
+    cond do
+      running == count ->
+        running
+
+      timed_out?(start_time) ->
+        raise Wallaby.ExpectationNotMetError,
+              "Timed out waiting for #{count} sync sessions for replica #{replica_id}, " <>
+                "the server runs #{running}"
+
+      true ->
+        :timer.sleep(50)
+        await_sync_sessions(replica_id, count, start_time)
+    end
+  end
+
+  @doc """
+  Polls the SERVER until it holds the given number of todos, and returns them sorted by title.
+
+  The row arriving is the confirmation that a batch landed - nothing app-facing exposes a per-row
+  durability to assert on instead. Answers whatever the server holds after the last attempt, so a
+  caller matching on the result gets a real assertion failure rather than a timeout.
+  """
+  @spec await_server_todos(non_neg_integer) :: [Todo.t()]
+  def await_server_todos(expected_count) do
+    Enum.reduce_while(1..100, [], fn _attempt, _acc ->
+      todos = Enum.sort_by(DB.read(Todo), & &1.title)
+
+      if length(todos) == expected_count do
+        {:halt, todos}
+      else
+        Process.sleep(50)
+        {:cont, todos}
+      end
+    end)
   end
 
   def cookies(session) do
@@ -321,6 +440,22 @@ defmodule HologramFeatureTests.Helpers do
     end
   end
 
+  @doc """
+  What the server kept of one browser's batches - the number and the answer of each - scoped to
+  the replica that sent them and ordered by number.
+  """
+  @spec mutation_record_rows(String.t()) :: [%{result: map | nil, seq: non_neg_integer}]
+  def mutation_record_rows(replica_id) do
+    statement = """
+    SELECT "result", "seq" FROM "hologram_system"."mutation"
+    WHERE "replica_id" = $1 ORDER BY "seq"
+    """
+
+    {:ok, %Postgrex.Result{rows: rows}} = Connection.query(statement, [replica_id])
+
+    Enum.map(rows, fn [result, seq] -> %{result: result, seq: seq} end)
+  end
+
   def reload(session) do
     Browser.execute_script(session, "document.location.reload();")
   end
@@ -338,6 +473,19 @@ defmodule HologramFeatureTests.Helpers do
 
   def scroll_to(session, x, y) do
     Browser.execute_script(session, "window.scrollTo(#{x}, #{y});")
+  end
+
+  @doc """
+  Returns how many sync sessions the server is running for `replica_id`.
+
+  A session is a process the stream starts and links to, so counting the live ones is asking what
+  the server is doing for this browser right now. Its replica is read from its own state rather
+  than from anything it publishes - there is no registry of them, and there does not need to be
+  for a test to count.
+  """
+  @spec sync_session_count(String.t()) :: non_neg_integer
+  def sync_session_count(replica_id) do
+    Enum.count(Process.list(), &(sync_session_replica_id(&1) == replica_id))
   end
 
   @doc """
@@ -553,8 +701,13 @@ defmodule HologramFeatureTests.Helpers do
   def wait_for_no_subscription(session, channel, cid \\ nil, start_time \\ nil) do
     start_time = start_time || current_time()
 
+    # Dropped AND no longer listening - the registry deletes the binding and then tells the
+    # connection to leave the topic, so between the two a broadcast still lands and a refute
+    # gated on the binding alone can see it. Channel-wide waits only: a single-cid drop
+    # legitimately leaves the connection on the topic for the channel's other cids, so there is
+    # no membership fact for that wait to check.
     cond do
-      !has_subscription?(channel, cid) ->
+      !has_subscription?(channel, cid) and (not is_nil(cid) or not sse_listening?(channel)) ->
         session
 
       timed_out?(start_time) ->
@@ -621,8 +774,13 @@ defmodule HologramFeatureTests.Helpers do
   def wait_for_subscription(session, channel, count \\ 1, cid \\ nil, start_time \\ nil) do
     start_time = start_time || current_time()
 
+    # Registered AND listening, because they happen apart: the registry writes the binding and
+    # then tells the connection to join the channel's PubSub topic, so between the two a
+    # broadcast reaches nobody. The binding is what a test can see - the topic membership is what
+    # delivery needs - and gating on the first alone is how a broadcast fired "after the
+    # subscription" still misses.
     cond do
-      subscription_count(channel, cid) >= count ->
+      subscription_count(channel, cid) >= count and listener_count(channel, cid) >= count ->
         session
 
       timed_out?(start_time) ->
@@ -728,6 +886,18 @@ defmodule HologramFeatureTests.Helpers do
     end
   end
 
+  # The pids on the channel's PubSub topic. phoenix_pubsub's subscribe is Registry.register on
+  # the registry named by the pubsub, so membership is readable - an implementation detail,
+  # pinned by the lockfile, and no deeper a peek than reading the SubscriptionRegistry's own
+  # table beside it.
+  defp channel_listeners(channel) do
+    topic = Realtime.channel_topic(channel)
+
+    Hologram.PubSub
+    |> Registry.lookup(topic)
+    |> MapSet.new(fn {pid, _value} -> pid end)
+  end
+
   defp has_subscription?(channel, cid) do
     SubscriptionRegistry.ets_table_name()
     |> :ets.tab2list()
@@ -741,6 +911,31 @@ defmodule HologramFeatureTests.Helpers do
   defp receiving?(entry, channel, cid) do
     bound?(entry, channel, cid) and
       Realtime.channel_topic(channel) in Registry.keys(Hologram.PubSub, entry.sse_pid)
+  end
+
+  # How many of the connections holding the binding are actually ON the channel's topic.
+  defp listener_count(channel, cid) do
+    listening = channel_listeners(channel)
+
+    SubscriptionRegistry.ets_table_name()
+    |> :ets.tab2list()
+    |> Enum.count(fn {_instance_id, entry} ->
+      MapSet.member?(listening, entry.sse_pid) and
+        Enum.any?(entry.bindings, fn {{ch, c}, _user_id} ->
+          ch == channel and (is_nil(cid) or c == cid)
+        end)
+    end)
+  end
+
+  # Whether any live connection is still on the channel's topic. Checked against the
+  # connections rather than against binding-holders, because it gates the state where the
+  # BINDINGS are already gone and only the membership lags.
+  defp sse_listening?(channel) do
+    listening = channel_listeners(channel)
+
+    SubscriptionRegistry.ets_table_name()
+    |> :ets.tab2list()
+    |> Enum.any?(fn {_instance_id, entry} -> MapSet.member?(listening, entry.sse_pid) end)
   end
 
   defp registry_entry(session) do
@@ -763,6 +958,19 @@ defmodule HologramFeatureTests.Helpers do
       {:ok, element_text} -> element_text =~ ~r/#{Regex.escape(text)}/
       {:error, _reason} -> false
     end
+  end
+
+  # The replica a sync session is serving, or nothing for any other process - including a session
+  # whose client presented no identity, and one that dies between being listed and being asked.
+  defp sync_session_replica_id(pid) do
+    with {:dictionary, dictionary} <- Process.info(pid, :dictionary),
+         @sync_session_initial_call <- dictionary[:"$initial_call"] do
+      :sys.get_state(pid, 100).replica_id
+    else
+      _no_session -> nil
+    end
+  catch
+    :exit, _reason -> nil
   end
 
   defp timed_out?(start_time) do

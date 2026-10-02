@@ -8,10 +8,13 @@ defmodule Hologram.Test.FeatureHelpers do
 
   # Wallaby is not a Hologram dependency - client apps that use these helpers
   # bring their own. This lets the module compile without Wallaby present.
-  @compile {:no_warn_undefined, [Wallaby.Browser, Wallaby.ExpectationNotMetError]}
+  @compile {:no_warn_undefined,
+            [Wallaby.Browser, Wallaby.ExpectationNotMetError, Wallaby.Feature.Utils]}
 
   alias Hologram.Router
+  alias Hologram.Sync.Evaluators
   alias Wallaby.Browser
+  alias Wallaby.Feature.Utils
 
   @doc """
   Asserts that the session has navigated to the given page: blocks until the
@@ -32,6 +35,257 @@ defmodule Hologram.Test.FeatureHelpers do
     |> wait_for_page_mounting(page_module, opts)
     |> wait_for_ws_connection()
     |> wait_for_sse_connection()
+  end
+
+  @doc """
+  Blocks until no sync evaluator from an earlier test is still alive.
+
+  A test that empties the tables with TRUNCATE bypasses the write funnel, so no effect reaches
+  the log and nothing tells a running evaluator its rows are gone - it would keep serving its
+  pre-truncate round to whatever connects next. Waiting for the drain is what makes a test's
+  first frame mean that test's rows.
+  """
+  @spec await_evaluator_drain(non_neg_integer) :: :ok
+  def await_evaluator_drain(attempts_left \\ 2_000)
+
+  def await_evaluator_drain(0) do
+    raise "evaluators from an earlier test never drained"
+  end
+
+  def await_evaluator_drain(attempts_left) do
+    if Evaluators.live() == [] do
+      :ok
+    else
+      Process.sleep(1)
+      await_evaluator_drain(attempts_left - 1)
+    end
+  end
+
+  @doc """
+  Blocks until the client holds the given number of write batches waiting to ship.
+
+  The point a test can act on after releasing held mutation traffic: zero pending batches means
+  every batch has been answered, so what is on screen is what the answers left there.
+  """
+  @spec await_pending_writes(struct, non_neg_integer, non_neg_integer) :: struct
+  def await_pending_writes(session, count, attempts_left \\ 100)
+
+  def await_pending_writes(session, count, 0) do
+    callback = fn pending ->
+      raise Wallaby.ExpectationNotMetError,
+            "Timed out waiting for #{count} pending write batches, the client holds #{inspect(pending)}"
+    end
+
+    Browser.execute_script(session, pending_writes_script(), [], callback)
+  end
+
+  def await_pending_writes(session, count, attempts_left) do
+    callback = fn pending ->
+      if pending == count do
+        :ok
+      else
+        Process.sleep(50)
+        await_pending_writes(session, count, attempts_left - 1)
+      end
+    end
+
+    Browser.execute_script(session, pending_writes_script(), [], callback)
+  end
+
+  @doc """
+  Closes the tab the session is looking at and focuses `handle`, returning the `session`.
+
+  A session drives one tab at a time, so closing the current one leaves it pointing at nothing -
+  the handle to move to is passed in rather than guessed.
+  """
+  @spec close_tab(struct, String.t()) :: struct
+  def close_tab(session, handle) do
+    Browser.close_window(session)
+
+    focus_tab(session, handle)
+  end
+
+  @doc """
+  Points the session at the tab named by `handle` and returns the `session`.
+  """
+  @spec focus_tab(struct, String.t()) :: struct
+  def focus_tab(session, handle) do
+    Browser.focus_window(session, handle)
+  end
+
+  @doc """
+  Holds every mutation request the page makes AFTER it is sent, parking its answer until
+  `release_mutations/1`.
+
+  What it buys a test: the server applies the batch and its effects reach the stream, so the
+  frame carrying this client's own write lands while the batch is still pending. That ordering
+  happens on its own in the wild and never reliably in a test.
+  """
+  @spec hold_mutation_answers(struct) :: struct
+  def hold_mutation_answers(session) do
+    hold_mutations(session, "answers")
+  end
+
+  @doc """
+  Holds every mutation request the page makes BEFORE it is sent, until `release_mutations/1`.
+
+  What it buys a test: a write made elsewhere reaches the server first, so the browser meets a
+  newer value under a write of its own that nobody has ruled on yet.
+  """
+  @spec hold_mutation_requests(struct) :: struct
+  def hold_mutation_requests(session) do
+    hold_mutations(session, "requests")
+  end
+
+  @doc """
+  Holds every row a sync fill delivers, and the marker that ends it, until `release_sync_frames/1`.
+
+  What it buys a test: the window between a client being told to start over and its replacement
+  rows arriving. That window is milliseconds in the wild, so nothing a browser test does lands
+  inside it on its own - and it is where the rows a client keeps on screen are the only rows it
+  has.
+
+  The starting-over frame itself is NOT held, so a test can wait for the client to report that it
+  holds no place any more and know it is inside the window.
+
+  Wraps the `EventSource` constructor, so it must be called BEFORE the stream it means to hold is
+  opened. A client opens a fresh one whenever it reconnects, which is what makes this usable in
+  the middle of a test: hold, then provoke the disconnect.
+  """
+  @spec hold_sync_frames(struct) :: struct
+  def hold_sync_frames(session) do
+    script = """
+    (() => {
+      const held = globalThis.__hologramSyncGate;
+
+      if (held) {
+        held.open = false;
+        held.parked = [];
+
+        return;
+      }
+
+      const gate = {native: globalThis.EventSource, open: false, parked: []};
+
+      globalThis.__hologramSyncGate = gate;
+
+      gate.release = () => {
+        gate.open = true;
+
+        const parked = gate.parked;
+        gate.parked = [];
+
+        for (const [listener, event] of parked) {
+          listener(event);
+        }
+      };
+
+      globalThis.EventSource = class extends gate.native {
+        addEventListener(type, listener, ...rest) {
+          const holdable = type === "sync_deltas" || type === "synced";
+
+          const wrapped = holdable
+            ? (event) => {
+                if (gate.open) {
+                  listener(event);
+                } else {
+                  gate.parked.push([listener, event]);
+                }
+              }
+            : listener;
+
+          return super.addEventListener(type, wrapped, ...rest);
+        }
+      };
+    })();\
+    """
+
+    Browser.execute_script(session, script)
+  end
+
+  @doc """
+  Opens `page_module` in a second tab of the same browser, points the session at it, and blocks
+  until the Hologram client runtime has mounted it and established its server connections.
+
+  A second Wallaby SESSION is a second browser: its own profile, its own stored data, its own
+  locks. A second TAB is what a person opens, and the only way to reach anything a browser shares
+  between them - the local database, the queue of writes waiting to go out, and the tab that
+  speaks to the server for the rest.
+
+  Answers the `session`, now driving the new tab. `tab_handle/1` taken before the call is what
+  goes back to the first one.
+  """
+  @spec open_tab(struct, module, keyword) :: struct
+  def open_tab(session, page_module, params \\ []) do
+    path = Router.Helpers.page_path(page_module, params)
+
+    known =
+      session
+      |> Browser.window_handles()
+      |> MapSet.new()
+
+    Browser.execute_script(session, "window.open(arguments[0]);", [path])
+
+    session
+    |> focus_tab(wait_for_new_tab(session, known))
+    |> wait_for_page_mounting(page_module, [])
+    |> wait_for_ws_connection()
+    |> wait_for_sse_connection()
+  end
+
+  @doc """
+  Releases whatever `hold_mutation_answers/1` or `hold_mutation_requests/1` is holding.
+
+  Does nothing when nothing is held, and nothing again when called twice - a resolved gate stays
+  resolved, so a test may release without tracking whether it has.
+  """
+  @spec release_mutations(struct) :: struct
+  def release_mutations(session) do
+    Browser.execute_script(session, "globalThis.__hologramMutationGate?.release();")
+  end
+
+  @doc """
+  Releases whatever `hold_sync_frames/1` is holding, in the order it arrived.
+
+  Does nothing when nothing is held, and nothing again when called twice - a released gate stays
+  released, so a test may release without tracking whether it has.
+  """
+  @spec release_sync_frames(struct) :: struct
+  def release_sync_frames(session) do
+    Browser.execute_script(session, "globalThis.__hologramSyncGate?.release();")
+  end
+
+  @doc """
+  Starts the Wallaby sessions the test registered through the `@sessions`
+  attribute and returns them as the test's setup context.
+
+  The registered value is either a count or per-session options. Sessions carry
+  the test's ownership metadata, so a session's requests reach the same
+  checked-out state the test holds.
+  """
+  @spec start_sessions(map) :: keyword
+  def start_sessions(context) do
+    metadata = Utils.maybe_checkout_repos(context[:async])
+
+    start_session_opts =
+      Utils.put_create_session_fn([metadata: metadata], context[:create_session_fn])
+
+    context
+    |> get_in([:registered, :sessions])
+    |> Utils.sessions_iterable()
+    |> Enum.map(fn
+      opts when is_list(opts) -> Utils.start_session(opts, start_session_opts)
+      count when is_number(count) -> Utils.start_session([], start_session_opts)
+    end)
+    |> Utils.build_setup_return()
+  end
+
+  @doc """
+  Returns the handle of the tab the session is looking at, so it can be returned to later.
+  """
+  @spec tab_handle(struct) :: String.t()
+  def tab_handle(session) do
+    Browser.window_handle(session)
   end
 
   @doc """
@@ -63,6 +317,68 @@ defmodule Hologram.Test.FeatureHelpers do
     :erlang.monotonic_time(:milli_seconds)
   end
 
+  # One wrapper around fetch, installed once and re-armed on every call, so a test may hold, release
+  # and hold again. Only the mutation endpoint is parked - the page's own requests, the SSE
+  # handshake and every command go straight through, or holding a write would freeze the page.
+  #
+  # The abort race is not decoration: the sender gives a mutation request 30 seconds
+  # (`Config.mutationTimeoutMs`) and aborts it through the signal it passes here. A parked request
+  # that ignored the signal would wait on the gate forever, and the queue behind it with it - the
+  # test would then be holding something the browser had already given up on.
+  #
+  # fetch is bound to the global, because calling it as a method of anything else is an illegal
+  # invocation in a browser.
+  defp hold_mutations(session, mode) do
+    script = """
+    (() => {
+      const held = globalThis.__hologramMutationGate;
+
+      if (held) {
+        held.mode = "#{mode}";
+
+        held.gate = new Promise((resolve) => {
+          held.release = resolve;
+        });
+
+        return;
+      }
+
+      const gate = {mode: "#{mode}", real: globalThis.fetch.bind(globalThis)};
+
+      gate.gate = new Promise((resolve) => {
+        gate.release = resolve;
+      });
+
+      globalThis.__hologramMutationGate = gate;
+
+      globalThis.fetch = (url, opts = {}) => {
+        if (typeof url !== "string" || !url.endsWith("/hologram/mutation")) {
+          return gate.real(url, opts);
+        }
+
+        const aborted = new Promise((_resolve, reject) => {
+          const abort = () => reject(new DOMException("aborted", "AbortError"));
+
+          if (opts.signal?.aborted) {
+            abort();
+          }
+
+          opts.signal?.addEventListener("abort", abort);
+        });
+
+        const sent =
+          gate.mode === "requests"
+            ? gate.gate.then(() => gate.real(url, opts))
+            : gate.real(url, opts).then((response) => gate.gate.then(() => response));
+
+        return Promise.race([sent, aborted]);
+      };
+    })();\
+    """
+
+    Browser.execute_script(session, script)
+  end
+
   # Read at runtime (not compile time) so that the client app's Wallaby config
   # is honored - this module is compiled as part of the Hologram dependency,
   # before the client app's config exists.
@@ -78,6 +394,12 @@ defmodule Hologram.Test.FeatureHelpers do
 
       print_client_logs(session)
     end
+  end
+
+  # Answers null rather than zero for a page whose runtime has not attached the window yet, so a
+  # wait for zero pending batches keeps waiting instead of passing before the client can write.
+  defp pending_writes_script do
+    "return globalThis.Hologram?.['writes']?.pendingCount() ?? null;"
   end
 
   defp print_client_logs(session) do
@@ -99,6 +421,29 @@ defmodule Hologram.Test.FeatureHelpers do
 
   defp timed_out?(start_time) do
     current_time() - start_time > max_wait_time()
+  end
+
+  # The handle a window.open() produced, which the browser reports when it feels like it - so this
+  # waits for a handle that was not there before rather than assuming the last one is new.
+  defp wait_for_new_tab(session, known, start_time \\ nil) do
+    start_time = start_time || current_time()
+
+    opened =
+      session
+      |> Browser.window_handles()
+      |> Enum.find(&(!MapSet.member?(known, &1)))
+
+    cond do
+      opened ->
+        opened
+
+      timed_out?(start_time) ->
+        raise Wallaby.ExpectationNotMetError, "Timed out waiting for a second tab to open"
+
+      true ->
+        :timer.sleep(50)
+        wait_for_new_tab(session, known, start_time)
+    end
   end
 
   defp wait_for_page_mounting(session, expected_page, opts, start_time \\ nil) do

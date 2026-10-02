@@ -1,0 +1,348 @@
+"use strict";
+
+// The client's entity database: one plain table per entity type plus to-many relationship
+// facts, holding rows exactly as the wire spells them - plain JSON values, sort keys beside
+// them. Boxed terms are built only at the query result boundary, never stored here.
+//
+// The pot is flat. An entity reached through another entity's include lives in its own table
+// like any other, and a to-many relationship is a fact pairing two ids - assembling includes is
+// the reader's job, at read time. What the database holds is decided by the server, row by row:
+// there is no client-side eviction, a row leaves when the server says it is no longer this
+// client's to hold.
+
+import Model from "./model.mjs";
+import Overlay from "./overlay.mjs";
+
+// What joins a type and an id into one carried-mark key. A NUL cannot occur in either half, so
+// the two can never be told apart wrongly - and it is spelled as an escape rather than written
+// into the file as a raw byte, which is what used to make git call this source binary and every
+// grep over it come back empty.
+const SEPARATOR = "\u0000";
+
+export default class LocalDatabase {
+  // Who the client is, for the predicates that name the acting user - nil for a visitor. It
+  // arrives with the page rather than with the rows, and a resync does not clear it: what the
+  // client may see can change without anyone becoming someone else.
+  static actorUserId = null;
+
+  // What the render that handed this page over counted, keyed by the prop instance that asked -
+  // held until this client's own database is complete enough to count for itself.
+  static syncCounts = {};
+
+  // type -> relationship -> source id -> Set of target ids
+  static #facts = {};
+
+  // The rows held on an earlier word of the server's - a page render's, or a stream's from before
+  // a resync - until this fill confirms them. What is still here when the fill declares itself
+  // complete was never the client's to hold, or is no longer: a grant revoked between a render
+  // and a connect, or a row deleted while the browser was away.
+  static #carried = new Set();
+
+  // The scopes the server has declared complete ("page", "all") - until a scope arrives, the
+  // database answers with part of the truth and its readers must not treat it as the whole.
+  static #syncedScopes = new Set();
+
+  // type -> id -> row
+  static #tables = {};
+
+  static addFact(type, relationship, sourceId, targetId) {
+    LocalDatabase.#targetIds(type, relationship, sourceId).add(targetId);
+  }
+
+  // The three below answer what the SERVER last said, with no pending write folded in. Ingest
+  // asks these: a frame is a statement about the server's row, so deciding whether the client
+  // holds one has to be asked of the server's copy - a row that exists only as a write this
+  // client has not sent yet is not a row the server can be talking about.
+  static baseRow(type, id) {
+    return LocalDatabase.#tables[type]?.[id] ?? null;
+  }
+
+  static baseTable(type) {
+    return LocalDatabase.#tables[type] ?? {};
+  }
+
+  static baseTargetIds(type, relationship, sourceId) {
+    return LocalDatabase.#facts[type]?.[relationship]?.[sourceId] ?? new Set();
+  }
+
+  // Every held row goes back to awaiting the server's word, because a whole fill is about to say
+  // which of them are still this client's. The rows and their facts STAY - the screen goes on
+  // showing them and an action can still read and write them - and the marker ending the fill
+  // takes away whatever it never delivered, through the same sweep that takes away the rows a
+  // page carried and the stream never vouched for.
+  //
+  // The counts and the scope marks go, because neither is true of a database being filled: a
+  // count is answered from the rows as they stand once the client can count for itself, and no
+  // scope is complete again until a marker says so.
+  static beginRefill() {
+    for (const [type, table] of Object.entries(LocalDatabase.#tables)) {
+      for (const id of Object.keys(table)) {
+        LocalDatabase.markCarried(type, id);
+      }
+    }
+
+    LocalDatabase.syncCounts = {};
+    LocalDatabase.#syncedScopes = new Set();
+  }
+
+  static deleteFact(type, relationship, sourceId, targetId) {
+    LocalDatabase.#facts[type]?.[relationship]?.[sourceId]?.delete(targetId);
+  }
+
+  // A row leaving takes its relationship facts with it - the pairs it was the source of say
+  // nothing once there is no row to read them from.
+  static deleteRow(type, id) {
+    const table = LocalDatabase.#tables[type];
+
+    if (table) {
+      delete table[id];
+    }
+
+    const typeFacts = LocalDatabase.#facts[type];
+
+    if (typeFacts) {
+      for (const relationship of Object.keys(typeFacts)) {
+        delete typeFacts[relationship][id];
+      }
+    }
+  }
+
+  // Every READ passes through the overlay, so what a query, a policy check or an action sees is
+  // the row as this client last left it - its own unsent writes folded over what the server sent.
+  // With nothing pending each of these hands back exactly what the base one does, same object
+  // included.
+  static getRow(type, id) {
+    return Overlay.foldRow(type, id, LocalDatabase.baseRow(type, id));
+  }
+
+  static getTable(type) {
+    return Overlay.foldTable(type, LocalDatabase.baseTable(type));
+  }
+
+  static getTargetIds(type, relationship, sourceId) {
+    return Overlay.foldTargetIds(
+      type,
+      relationship,
+      sourceId,
+      LocalDatabase.baseTargetIds(type, relationship, sourceId),
+    );
+  }
+
+  // Whether a target set has been FILED for the triple, which is not the same as its holding
+  // something. A row states the whole set of a relationship it names, empty sets included, so
+  // "filed and empty" is a fact about the world and "never filed" is the absence of one - and the
+  // absence is what a stored set may still speak for. `baseTargetIds` cannot tell them apart,
+  // answering an empty set for both.
+  static hasFacts(type, relationship, sourceId) {
+    return LocalDatabase.#facts[type]?.[relationship]?.[sourceId] !== undefined;
+  }
+
+  static isSynced(scope) {
+    return LocalDatabase.#syncedScopes.has(scope);
+  }
+
+  // Every scope marked complete so far, as one value.
+  //
+  // Nothing stores them: a scope is made complete by a marker on a STREAM, so a database read back
+  // at a page load has been told nothing about completeness and starts with none, however much it
+  // holds. Which is why they can be asked for whole - the answer is only ever what this run of the
+  // client has been told.
+  static syncedScopes() {
+    return Array.from(LocalDatabase.#syncedScopes);
+  }
+
+  static carriedEntries() {
+    return Array.from(LocalDatabase.#carried, (entry) =>
+      entry.split(SEPARATOR),
+    );
+  }
+
+  static markCarried(type, id) {
+    LocalDatabase.#carried.add(`${type}${SEPARATOR}${id}`);
+  }
+
+  static unmarkCarried(type, id) {
+    LocalDatabase.#carried.delete(`${type}${SEPARATOR}${id}`);
+  }
+
+  // The whole-pot marker is what makes a carried row's absence mean something: the fill is
+  // complete at "all" by definition, so a row still held only because a page carried it is one
+  // the server never sent - a grant revoked between that render and this connect leaves exactly
+  // that. Dropped here rather than left to be read, which is the discard the resync path makes.
+  static markSynced(scope) {
+    LocalDatabase.#syncedScopes.add(scope);
+
+    if (scope === "all") {
+      LocalDatabase.#sweepCarried();
+    }
+  }
+
+  static putRow(type, row) {
+    let table = LocalDatabase.#tables[type];
+
+    if (!table) {
+      table = {};
+      LocalDatabase.#tables[type] = table;
+    }
+
+    table[row.id] = row;
+  }
+
+  // What one frame's rows look like on their way to durable storage: a record per row, holding the
+  // row exactly as the base holds it - plain values, sort keys, $revisions - with the target ids of
+  // its to-many relationships beside it.
+  //
+  // The facts ride WITH their source row rather than in a place of their own, because that is how
+  // they are keyed here: a row leaving takes them with it, and an edge names the row whose
+  // relationships changed. So one row is one record, and one change is one write. A to-one is not
+  // among them - it lives in the row itself, as a reference field.
+  //
+  // A key the base no longer holds answers a record with no row, which is what a frame that
+  // deleted or unsynced one leaves behind. Deciding what to do about that is the reader's.
+  static records(rowKeys) {
+    return Array.from(rowKeys, (rowKey) => {
+      const separator = rowKey.indexOf(" ");
+      const type = rowKey.slice(0, separator);
+      const id = rowKey.slice(separator + 1);
+      const row = LocalDatabase.baseRow(type, id);
+
+      return row === null
+        ? {id, row: null, type}
+        : {facts: LocalDatabase.#toManyFacts(type, id), id, row, type};
+    });
+  }
+
+  // The rows the STREAM vouched for, each keyed "<type> <id>" the way a frame names one - so the
+  // answer is what `records` takes, and a whole database can be written down the way one frame's
+  // rows are.
+  //
+  // A carried row is left out, which is the same rule durable storage already follows a frame at a
+  // time: a page's rows are the server's word for one render, every visit carries them again, and
+  // a row held only because a page carried it is one a completeness marker may yet take away.
+  static vouchedRowKeys() {
+    const rowKeys = new Set();
+
+    for (const [type, table] of Object.entries(LocalDatabase.#tables)) {
+      for (const id of Object.keys(table)) {
+        if (!LocalDatabase.#carried.has(`${type}${SEPARATOR}${id}`)) {
+          rowKeys.add(`${type} ${id}`);
+        }
+      }
+    }
+
+    return rowKeys;
+  }
+
+  // The whole current target set for one (source, relationship) - the snapshot statement a row's
+  // id list carries, replacing whatever pairs were held before.
+  static replaceFacts(type, relationship, sourceId, targetIds) {
+    const targets = LocalDatabase.#targetIds(type, relationship, sourceId);
+
+    targets.clear();
+
+    for (const targetId of targetIds) {
+      targets.add(targetId);
+    }
+  }
+
+  // Fills the database with what a previous page load left in durable storage, WITHOUT disturbing
+  // anything this page already carried.
+  //
+  // What the page carried is the fresher of the two by construction: the server rendered it for
+  // this request, and these records were written from frames that arrived before the last unload.
+  // So a row the page brought wins on its values, and a stored row fills only an id the page said
+  // nothing about. Facts are the one place a stored record still has something to add to a held
+  // row: a page's row states the target sets of the relationships its query included and stays
+  // silent about the rest, and a set nobody has filed is one the stored record may speak for.
+  //
+  // A held row is also unmarked as carried, because holding a stored record for it IS the evidence
+  // the stream vouched for it on an earlier load. Left marked, it would be swept the moment the
+  // server declares the pot complete - and a resuming client is told only what changed while it
+  // was away, so nothing would resend it.
+  static restore(records) {
+    for (const record of records) {
+      // A snapshot of a gone row is never written down, and the shape allows one, so it is passed
+      // over rather than filed as a row with nothing in it.
+      if (record.row === null) {
+        continue;
+      }
+
+      const {facts, id, row, type} = record;
+
+      if (LocalDatabase.baseRow(type, id) === null) {
+        LocalDatabase.putRow(type, row);
+      } else {
+        LocalDatabase.unmarkCarried(type, id);
+      }
+
+      for (const [relationship, targetIds] of Object.entries(facts)) {
+        if (!LocalDatabase.hasFacts(type, relationship, id)) {
+          LocalDatabase.replaceFacts(type, relationship, id, targetIds);
+        }
+      }
+    }
+  }
+
+  // The overlay is deliberately NOT reset here. This runs on a resync, which replaces what the
+  // SERVER said - and what this client has written and not yet sent is not the server's to take
+  // away. Overlay.reset() exists for the callers that do mean it.
+  static reset() {
+    LocalDatabase.syncCounts = {};
+    LocalDatabase.#carried = new Set();
+    LocalDatabase.#facts = {};
+    LocalDatabase.#syncedScopes = new Set();
+    LocalDatabase.#tables = {};
+  }
+
+  static #sweepCarried() {
+    for (const [type, id] of LocalDatabase.carriedEntries()) {
+      LocalDatabase.deleteRow(type, id);
+    }
+
+    LocalDatabase.#carried = new Set();
+  }
+
+  // A relationship nothing has FILED a set for is left out, rather than written down as empty.
+  // `baseTargetIds` answers an empty set for both, so storing what it returns would turn "nobody
+  // has said" into "the server said none" - an assertion nobody made, which `restore` would then
+  // act on by filing it. The two are told apart by `hasFacts`, and the whole point of that
+  // distinction is lost if the snapshot flattens it.
+  static #toManyFacts(type, id) {
+    const facts = {};
+
+    for (const [name, relationship] of Object.entries(
+      Model.relationships(type),
+    )) {
+      if (relationship.toMany && LocalDatabase.hasFacts(type, name, id)) {
+        facts[name] = Array.from(LocalDatabase.baseTargetIds(type, name, id));
+      }
+    }
+
+    return facts;
+  }
+
+  static #targetIds(type, relationship, sourceId) {
+    let typeFacts = LocalDatabase.#facts[type];
+
+    if (!typeFacts) {
+      typeFacts = {};
+      LocalDatabase.#facts[type] = typeFacts;
+    }
+
+    let relationshipFacts = typeFacts[relationship];
+
+    if (!relationshipFacts) {
+      relationshipFacts = {};
+      typeFacts[relationship] = relationshipFacts;
+    }
+
+    let targets = relationshipFacts[sourceId];
+
+    if (!targets) {
+      targets = new Set();
+      relationshipFacts[sourceId] = targets;
+    }
+
+    return targets;
+  }
+}

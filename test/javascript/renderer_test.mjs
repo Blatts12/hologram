@@ -905,7 +905,7 @@ describe("Renderer", () => {
           const stub = sinon
             .stub(Hologram, "handleUiEvent")
             .callsFake(
-              (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+              (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
             );
 
           vdom.data.on.click("dummyEvent");
@@ -963,7 +963,7 @@ describe("Renderer", () => {
           const stub = sinon
             .stub(Hologram, "handleUiEvent")
             .callsFake(
-              (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+              (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
             );
 
           vdom.data.on.click("dummyClickEvent");
@@ -1039,7 +1039,7 @@ describe("Renderer", () => {
           const stub = sinon
             .stub(Hologram, "handleUiEvent")
             .callsFake(
-              (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+              (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
             );
 
           vdom.data.on.keydown("dummyEvent");
@@ -1647,8 +1647,7 @@ describe("Renderer", () => {
             const stub = sinon
               .stub(Hologram, "handleUiEvent")
               .callsFake(
-                (_event, _eventType, _operationSpecVdom, _defaultTarget) =>
-                  null,
+                (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
               );
 
             // A non-matching key is gated out - the handler never dispatches.
@@ -1722,8 +1721,7 @@ describe("Renderer", () => {
             const stub = sinon
               .stub(Hologram, "handleUiEvent")
               .callsFake(
-                (_event, _eventType, _operationSpecVdom, _defaultTarget) =>
-                  null,
+                (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
               );
 
             vdom.data.on.keydown({key: "Enter"});
@@ -2292,7 +2290,7 @@ describe("Renderer", () => {
         });
       });
 
-      describe("default operation target", () => {
+      describe("default dispatch target", () => {
         it("current stateful component", () => {
           const node = Type.tuple([
             Type.atom("component"),
@@ -2324,7 +2322,7 @@ describe("Renderer", () => {
           const stub = sinon
             .stub(Hologram, "handleUiEvent")
             .callsFake(
-              (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+              (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
             );
 
           vdom[0].children[1].data.on.click("dummyEvent");
@@ -2363,7 +2361,7 @@ describe("Renderer", () => {
           const stub = sinon
             .stub(Hologram, "handleUiEvent")
             .callsFake(
-              (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+              (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
             );
 
           vdom[0].children[1].data.on.click("dummyEvent");
@@ -2399,7 +2397,7 @@ describe("Renderer", () => {
           const stub = sinon
             .stub(Hologram, "handleUiEvent")
             .callsFake(
-              (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+              (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
             );
 
           vdom.children[0].children[0].children[1].data.on.click("dummyEvent");
@@ -2435,7 +2433,7 @@ describe("Renderer", () => {
           const stub = sinon
             .stub(Hologram, "handleUiEvent")
             .callsFake(
-              (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+              (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
             );
 
           vdom.children[0].children[0].children[1].data.on.click("dummyEvent");
@@ -2513,7 +2511,7 @@ describe("Renderer", () => {
           const stub = sinon
             .stub(Hologram, "handleUiEvent")
             .callsFake(
-              (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+              (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
             );
 
           vdom[0].children[1].children[1].data.on.click("dummyEvent");
@@ -7475,7 +7473,7 @@ describe("Renderer", () => {
       const stub = sinon
         .stub(Hologram, "handleUiEvent")
         .callsFake(
-          (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+          (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
         );
 
       result.data.on.click("dummyEvent");
@@ -7926,7 +7924,7 @@ describe("Renderer", () => {
       const stub = sinon
         .stub(Hologram, "handleUiEvent")
         .callsFake(
-          (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+          (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
         );
 
       Renderer.listenerBindings[0].handler("dummyEvent");
@@ -8138,7 +8136,7 @@ describe("Renderer", () => {
       const stub = sinon
         .stub(Hologram, "handleUiEvent")
         .callsFake(
-          (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+          (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
         );
 
       const handler = Renderer.listenerBindings[0].handler;
@@ -8190,7 +8188,7 @@ describe("Renderer", () => {
       const stub = sinon
         .stub(Hologram, "handleUiEvent")
         .callsFake(
-          (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+          (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
         );
 
       const event = {target: {}};
@@ -8304,7 +8302,7 @@ describe("Renderer", () => {
       const stub = sinon
         .stub(Hologram, "handleUiEvent")
         .callsFake(
-          (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+          (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
         );
 
       const event = {target: {}};
@@ -8474,7 +8472,7 @@ describe("Renderer", () => {
       const stub = sinon
         .stub(Hologram, "handleUiEvent")
         .callsFake(
-          (_event, _eventType, _operationSpecVdom, _defaultTarget) => null,
+          (_event, _eventType, _dispatchSpecVdom, _defaultTarget) => null,
         );
 
       const entry = {

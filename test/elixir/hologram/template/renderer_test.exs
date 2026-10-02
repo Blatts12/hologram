@@ -16,6 +16,7 @@ defmodule Hologram.Template.RendererTest do
   alias Hologram.Test.Fixtures.LayoutFixture
   alias Hologram.Test.Fixtures.Template.Renderer.Module1
   alias Hologram.Test.Fixtures.Template.Renderer.Module10
+  alias Hologram.Test.Fixtures.Template.Renderer.Module104
   alias Hologram.Test.Fixtures.Template.Renderer.Module11
   alias Hologram.Test.Fixtures.Template.Renderer.Module12
   alias Hologram.Test.Fixtures.Template.Renderer.Module14
@@ -77,11 +78,20 @@ defmodule Hologram.Template.RendererTest do
   alias Hologram.Test.Fixtures.Template.Renderer.Module90
   alias Hologram.Test.Fixtures.Template.Renderer.Module91
   alias Hologram.Test.Fixtures.Template.Renderer.Module92
+  alias Hologram.Test.Fixtures.Template.Renderer.Module96
 
   @csrf_token "test-csrf-token"
   @env %Renderer.Env{}
   @instance_id "test-instance-id"
-  @opts [csrf_token: @csrf_token, initial_page?: true, instance_id: @instance_id]
+  @replica_id "test-replica-id"
+  @replica_token "test-replica-token"
+  @opts [
+    csrf_token: @csrf_token,
+    initial_page?: true,
+    instance_id: @instance_id,
+    replica_id: @replica_id,
+    replica_token: @replica_token
+  ]
   @params %{}
 
   @server %Server{
@@ -1744,12 +1754,15 @@ defmodule Hologram.Template.RendererTest do
                     module: Module39,
                     struct: %Component{
                       emitted_context: %{
-                        {Hologram.Runtime, :csrf_token} => @csrf_token,
-                        {Hologram.Runtime, :initial_page?} => false,
-                        {Hologram.Runtime, :instance_id} => @instance_id,
-                        {Hologram.Runtime, :page_digest} => :dummy_module_39_digest,
-                        {Hologram.Runtime, :page_module} => Module39,
-                        {Hologram.Runtime, :page_mounted?} => true,
+                        {Hologram, :csrf_token} => @csrf_token,
+                        {Hologram, :initial_page?} => false,
+                        {Hologram, :instance_id} => @instance_id,
+                        {Hologram, :page_digest} => :dummy_module_39_digest,
+                        {Hologram, :page_module} => Module39,
+                        {Hologram, :page_mounted?} => true,
+                        {Hologram, :replica_id} => @replica_id,
+                        {Hologram, :replica_token} => @replica_token,
+                        {Hologram, :user} => nil,
                         {:my_scope, :my_key} => 123
                       }
                     }
@@ -1774,12 +1787,15 @@ defmodule Hologram.Template.RendererTest do
                     module: Module46,
                     struct: %Component{
                       emitted_context: %{
-                        {Hologram.Runtime, :csrf_token} => @csrf_token,
-                        {Hologram.Runtime, :initial_page?} => false,
-                        {Hologram.Runtime, :instance_id} => @instance_id,
-                        {Hologram.Runtime, :page_digest} => :dummy_module_46_digest,
-                        {Hologram.Runtime, :page_module} => Module46,
-                        {Hologram.Runtime, :page_mounted?} => true,
+                        {Hologram, :csrf_token} => @csrf_token,
+                        {Hologram, :initial_page?} => false,
+                        {Hologram, :instance_id} => @instance_id,
+                        {Hologram, :page_digest} => :dummy_module_46_digest,
+                        {Hologram, :page_module} => Module46,
+                        {Hologram, :page_mounted?} => true,
+                        {Hologram, :replica_id} => @replica_id,
+                        {Hologram, :replica_token} => @replica_token,
+                        {Hologram, :user} => nil,
                         {:my_scope, :my_key} => 123
                       }
                     }
@@ -1804,12 +1820,15 @@ defmodule Hologram.Template.RendererTest do
                     module: Module40,
                     struct: %Component{
                       emitted_context: %{
-                        {Hologram.Runtime, :csrf_token} => @csrf_token,
-                        {Hologram.Runtime, :initial_page?} => false,
-                        {Hologram.Runtime, :instance_id} => @instance_id,
-                        {Hologram.Runtime, :page_digest} => :dummy_module_40_digest,
-                        {Hologram.Runtime, :page_module} => Module40,
-                        {Hologram.Runtime, :page_mounted?} => true,
+                        {Hologram, :csrf_token} => @csrf_token,
+                        {Hologram, :initial_page?} => false,
+                        {Hologram, :instance_id} => @instance_id,
+                        {Hologram, :page_digest} => :dummy_module_40_digest,
+                        {Hologram, :page_module} => Module40,
+                        {Hologram, :page_mounted?} => true,
+                        {Hologram, :replica_id} => @replica_id,
+                        {Hologram, :replica_token} => @replica_token,
+                        {Hologram, :user} => nil,
                         {:my_scope, :my_key} => 123
                       }
                     }
@@ -1834,12 +1853,15 @@ defmodule Hologram.Template.RendererTest do
                     module: Module43,
                     struct: %Component{
                       emitted_context: %{
-                        {Hologram.Runtime, :csrf_token} => @csrf_token,
-                        {Hologram.Runtime, :initial_page?} => false,
-                        {Hologram.Runtime, :instance_id} => @instance_id,
-                        {Hologram.Runtime, :page_digest} => :dummy_module_43_digest,
-                        {Hologram.Runtime, :page_module} => Module43,
-                        {Hologram.Runtime, :page_mounted?} => true
+                        {Hologram, :csrf_token} => @csrf_token,
+                        {Hologram, :initial_page?} => false,
+                        {Hologram, :instance_id} => @instance_id,
+                        {Hologram, :page_digest} => :dummy_module_43_digest,
+                        {Hologram, :page_module} => Module43,
+                        {Hologram, :page_mounted?} => true,
+                        {Hologram, :replica_id} => @replica_id,
+                        {Hologram, :replica_token} => @replica_token,
+                        {Hologram, :user} => nil
                       }
                     }
                   }
@@ -1863,12 +1885,15 @@ defmodule Hologram.Template.RendererTest do
                     module: Module45,
                     struct: %Component{
                       emitted_context: %{
-                        {Hologram.Runtime, :csrf_token} => @csrf_token,
-                        {Hologram.Runtime, :initial_page?} => false,
-                        {Hologram.Runtime, :instance_id} => @instance_id,
-                        {Hologram.Runtime, :page_digest} => :dummy_module_45_digest,
-                        {Hologram.Runtime, :page_module} => Module45,
-                        {Hologram.Runtime, :page_mounted?} => true
+                        {Hologram, :csrf_token} => @csrf_token,
+                        {Hologram, :initial_page?} => false,
+                        {Hologram, :instance_id} => @instance_id,
+                        {Hologram, :page_digest} => :dummy_module_45_digest,
+                        {Hologram, :page_module} => Module45,
+                        {Hologram, :page_mounted?} => true,
+                        {Hologram, :replica_id} => @replica_id,
+                        {Hologram, :replica_token} => @replica_token,
+                        {Hologram, :user} => nil
                       }
                     }
                   }
@@ -1981,12 +2006,15 @@ defmodule Hologram.Template.RendererTest do
                     module: Module28,
                     struct: %Component{
                       emitted_context: %{
-                        {Hologram.Runtime, :csrf_token} => @csrf_token,
-                        {Hologram.Runtime, :initial_page?} => false,
-                        {Hologram.Runtime, :instance_id} => @instance_id,
-                        {Hologram.Runtime, :page_digest} => :dummy_module_28_digest,
-                        {Hologram.Runtime, :page_module} => Module28,
-                        {Hologram.Runtime, :page_mounted?} => true
+                        {Hologram, :csrf_token} => @csrf_token,
+                        {Hologram, :initial_page?} => false,
+                        {Hologram, :instance_id} => @instance_id,
+                        {Hologram, :page_digest} => :dummy_module_28_digest,
+                        {Hologram, :page_module} => Module28,
+                        {Hologram, :page_mounted?} => true,
+                        {Hologram, :replica_id} => @replica_id,
+                        {Hologram, :replica_token} => @replica_token,
+                        {Hologram, :user} => nil
                       },
                       state: %{state_1: "value_1", state_2: "value_2"}
                     }
@@ -2011,12 +2039,15 @@ defmodule Hologram.Template.RendererTest do
                     module: Module29,
                     struct: %Component{
                       emitted_context: %{
-                        {Hologram.Runtime, :csrf_token} => @csrf_token,
-                        {Hologram.Runtime, :initial_page?} => false,
-                        {Hologram.Runtime, :instance_id} => @instance_id,
-                        {Hologram.Runtime, :page_digest} => :dummy_module_29_digest,
-                        {Hologram.Runtime, :page_module} => Module29,
-                        {Hologram.Runtime, :page_mounted?} => true
+                        {Hologram, :csrf_token} => @csrf_token,
+                        {Hologram, :initial_page?} => false,
+                        {Hologram, :instance_id} => @instance_id,
+                        {Hologram, :page_digest} => :dummy_module_29_digest,
+                        {Hologram, :page_module} => Module29,
+                        {Hologram, :page_mounted?} => true,
+                        {Hologram, :replica_id} => @replica_id,
+                        {Hologram, :replica_token} => @replica_token,
+                        {Hologram, :user} => nil
                       }
                     }
                   }
@@ -2090,7 +2121,13 @@ defmodule Hologram.Template.RendererTest do
     test "injects (interpolated) asset manifest when the initial_page? opt is set to true" do
       ETS.put(PageDigestRegistryStub.ets_table_name(), Module53, :dummy_module_53_digest)
 
-      opts = [csrf_token: @csrf_token, initial_page?: true, instance_id: @instance_id]
+      opts = [
+        csrf_token: @csrf_token,
+        initial_page?: true,
+        instance_id: @instance_id,
+        replica_id: @replica_id,
+        replica_token: @replica_token
+      ]
 
       assert {html, _component_registry, _server_struct} =
                render_page_without_tree(Module53, @params, @server, opts)
@@ -2121,7 +2158,7 @@ defmodule Hologram.Template.RendererTest do
                render_page_without_tree(Module48, @params, @server, @opts)
 
       expected =
-        ~s/componentRegistry: Type.map([[Type.bitstring("layout"), Type.map([[Type.atom("module"), Type.atom("Elixir.Hologram.Test.Fixtures.Template.Renderer.Module49")], [Type.atom("struct"), Type.map([[Type.atom("__struct__"), Type.atom("Elixir.Hologram.Component")], [Type.atom("emitted_context"), Type.map([])], [Type.atom("next_action"), Type.atom("nil")], [Type.atom("next_command"), Type.atom("nil")], [Type.atom("next_page"), Type.atom("nil")], [Type.atom("props"), Type.map([])], [Type.atom("state"), Type.map([])]])]])], [Type.bitstring("page"), Type.map([[Type.atom("module"), Type.atom("Elixir.Hologram.Test.Fixtures.Template.Renderer.Module48")], [Type.atom("struct"), Type.map([[Type.atom("__struct__"), Type.atom("Elixir.Hologram.Component")], [Type.atom("emitted_context"), Type.map([[Type.tuple([Type.atom("Elixir.Hologram.Runtime"), Type.atom("csrf_token")]), Type.bitstring("#{@csrf_token}")], [Type.tuple([Type.atom("Elixir.Hologram.Runtime"), Type.atom("initial_page?")]), Type.atom("false")], [Type.tuple([Type.atom("Elixir.Hologram.Runtime"), Type.atom("instance_id")]), Type.bitstring("#{@instance_id}")], [Type.tuple([Type.atom("Elixir.Hologram.Runtime"), Type.atom("page_digest")]), Type.bitstring("102790adb6c3b1956db310be523a7693")], [Type.tuple([Type.atom("Elixir.Hologram.Runtime"), Type.atom("page_module")]), Type.atom("Elixir.Hologram.Test.Fixtures.Template.Renderer.Module48")], [Type.tuple([Type.atom("Elixir.Hologram.Runtime"), Type.atom("page_mounted?")]), Type.atom("true")]])], [Type.atom("next_action"), Type.atom("nil")], [Type.atom("next_command"), Type.atom("nil")], [Type.atom("next_page"), Type.atom("nil")], [Type.atom("props"), Type.map([])], [Type.atom("state"), Type.map([])]])]])]])/
+        ~s/componentRegistry: Type.map([[Type.bitstring("layout"), Type.map([[Type.atom("module"), Type.atom("Elixir.Hologram.Test.Fixtures.Template.Renderer.Module49")], [Type.atom("struct"), Type.map([[Type.atom("__struct__"), Type.atom("Elixir.Hologram.Component")], [Type.atom("emitted_context"), Type.map([])], [Type.atom("next_action"), Type.atom("nil")], [Type.atom("next_command"), Type.atom("nil")], [Type.atom("next_page"), Type.atom("nil")], [Type.atom("props"), Type.map([])], [Type.atom("state"), Type.map([])]])]])], [Type.bitstring("page"), Type.map([[Type.atom("module"), Type.atom("Elixir.Hologram.Test.Fixtures.Template.Renderer.Module48")], [Type.atom("struct"), Type.map([[Type.atom("__struct__"), Type.atom("Elixir.Hologram.Component")], [Type.atom("emitted_context"), Type.map([[Type.tuple([Type.atom("Elixir.Hologram"), Type.atom("csrf_token")]), Type.bitstring("#{@csrf_token}")], [Type.tuple([Type.atom("Elixir.Hologram"), Type.atom("initial_page?")]), Type.atom("false")], [Type.tuple([Type.atom("Elixir.Hologram"), Type.atom("instance_id")]), Type.bitstring("#{@instance_id}")], [Type.tuple([Type.atom("Elixir.Hologram"), Type.atom("page_digest")]), Type.bitstring("102790adb6c3b1956db310be523a7693")], [Type.tuple([Type.atom("Elixir.Hologram"), Type.atom("page_module")]), Type.atom("Elixir.Hologram.Test.Fixtures.Template.Renderer.Module48")], [Type.tuple([Type.atom("Elixir.Hologram"), Type.atom("page_mounted?")]), Type.atom("true")], [Type.tuple([Type.atom("Elixir.Hologram"), Type.atom("replica_id")]), Type.bitstring("#{@replica_id}")], [Type.tuple([Type.atom("Elixir.Hologram"), Type.atom("replica_token")]), Type.bitstring("#{@replica_token}")], [Type.tuple([Type.atom("Elixir.Hologram"), Type.atom("user")]), Type.atom("nil")]])], [Type.atom("next_action"), Type.atom("nil")], [Type.atom("next_command"), Type.atom("nil")], [Type.atom("next_page"), Type.atom("nil")], [Type.atom("props"), Type.map([])], [Type.atom("state"), Type.map([])]])]])]])/
 
       assert String.contains?(html, expected)
     end
@@ -2139,6 +2176,20 @@ defmodule Hologram.Template.RendererTest do
 
       refute mount_data.component_registry =~ "param_value_1"
       assert mount_data.component_registry =~ ~s/[Type.atom("props"), Type.map([])]/
+    end
+
+    test "interpolate component structs JS with server-only state values replaced by the sentinel" do
+      ETS.put(PageDigestRegistryStub.ets_table_name(), Module96, :dummy_module_96_digest)
+
+      assert {html, _component_registry, _server_struct} =
+               render_page_without_tree(Module96, @params, @server, @opts)
+
+      expected_sentinel =
+        ~s/[Type.atom("token"), Type.map([[Type.atom("__struct__"), Type.atom("Elixir.Hologram.Entity.ServerOnly")], [Type.atom("attribute"), Type.atom("token")]])]/
+
+      assert String.contains?(html, expected_sentinel)
+      refute String.contains?(html, "note_secret_v3")
+      refute String.contains?(html, "tok_D8vN")
     end
 
     test "interpolate page module JS" do
@@ -2239,14 +2290,20 @@ defmodule Hologram.Template.RendererTest do
     test "CSRF token is put into page emitted context for initial page requests" do
       ETS.put(PageDigestRegistryStub.ets_table_name(), Module28, :dummy_module_28_digest)
 
-      opts = [csrf_token: @csrf_token, initial_page?: true, instance_id: @instance_id]
+      opts = [
+        csrf_token: @csrf_token,
+        initial_page?: true,
+        instance_id: @instance_id,
+        replica_id: @replica_id,
+        replica_token: @replica_token
+      ]
 
       assert {_html, component_registry, _server_struct} =
                render_page_without_tree(Module28, @params, @server, opts)
 
       page_emitted_context = component_registry["page"].struct.emitted_context
 
-      assert page_emitted_context[{Hologram.Runtime, :csrf_token}] == @csrf_token
+      assert page_emitted_context[{Hologram, :csrf_token}] == @csrf_token
     end
 
     test "CSRF token is not put into page emitted context for subsequent page requests even when provided" do
@@ -2259,7 +2316,7 @@ defmodule Hologram.Template.RendererTest do
 
       page_emitted_context = component_registry["page"].struct.emitted_context
 
-      refute Map.has_key?(page_emitted_context, {Hologram.Runtime, :csrf_token})
+      refute Map.has_key?(page_emitted_context, {Hologram, :csrf_token})
     end
 
     test "raises ArgumentError when CSRF token is not provided for initial page requests" do
@@ -2292,20 +2349,26 @@ defmodule Hologram.Template.RendererTest do
 
       page_emitted_context = component_registry["page"].struct.emitted_context
 
-      refute Map.has_key?(page_emitted_context, {Hologram.Runtime, :csrf_token})
+      refute Map.has_key?(page_emitted_context, {Hologram, :csrf_token})
     end
 
     test "instance_id is put into page emitted context for initial page requests" do
       ETS.put(PageDigestRegistryStub.ets_table_name(), Module28, :dummy_module_28_digest)
 
-      opts = [csrf_token: @csrf_token, initial_page?: true, instance_id: @instance_id]
+      opts = [
+        csrf_token: @csrf_token,
+        initial_page?: true,
+        instance_id: @instance_id,
+        replica_id: @replica_id,
+        replica_token: @replica_token
+      ]
 
       assert {_html, component_registry, _server_struct} =
                render_page_without_tree(Module28, @params, @server, opts)
 
       page_emitted_context = component_registry["page"].struct.emitted_context
 
-      assert page_emitted_context[{Hologram.Runtime, :instance_id}] == @instance_id
+      assert page_emitted_context[{Hologram, :instance_id}] == @instance_id
     end
 
     test "instance_id is not put into page emitted context for subsequent page requests even when provided" do
@@ -2318,7 +2381,7 @@ defmodule Hologram.Template.RendererTest do
 
       page_emitted_context = component_registry["page"].struct.emitted_context
 
-      refute Map.has_key?(page_emitted_context, {Hologram.Runtime, :instance_id})
+      refute Map.has_key?(page_emitted_context, {Hologram, :instance_id})
     end
 
     test "raises ArgumentError when instance_id is not provided for initial page requests" do
@@ -2341,6 +2404,108 @@ defmodule Hologram.Template.RendererTest do
       end
     end
 
+    test "replica_id is put into page emitted context for initial page requests" do
+      ETS.put(PageDigestRegistryStub.ets_table_name(), Module28, :dummy_module_28_digest)
+
+      assert {_html, component_registry, _server_struct} =
+               render_page_without_tree(Module28, @params, @server, @opts)
+
+      page_emitted_context = component_registry["page"].struct.emitted_context
+
+      assert page_emitted_context[{Hologram, :replica_id}] == @replica_id
+      assert page_emitted_context[{Hologram, :replica_token}] == @replica_token
+    end
+
+    test "replica identity is not put into page emitted context for subsequent page requests even when provided" do
+      ETS.put(PageDigestRegistryStub.ets_table_name(), Module28, :dummy_module_28_digest)
+
+      opts = [initial_page?: false, replica_id: @replica_id, replica_token: @replica_token]
+
+      assert {_html, component_registry, _server_struct} =
+               render_page_without_tree(Module28, @params, @server, opts)
+
+      page_emitted_context = component_registry["page"].struct.emitted_context
+
+      refute Map.has_key?(page_emitted_context, {Hologram, :replica_id})
+      refute Map.has_key?(page_emitted_context, {Hologram, :replica_token})
+    end
+
+    test "replica identity is not required for subsequent page requests" do
+      ETS.put(PageDigestRegistryStub.ets_table_name(), Module28, :dummy_module_28_digest)
+
+      opts = [initial_page?: false]
+
+      assert {_html, component_registry, _server_struct} =
+               render_page_without_tree(Module28, @params, @server, opts)
+
+      page_emitted_context = component_registry["page"].struct.emitted_context
+
+      refute Map.has_key?(page_emitted_context, {Hologram, :replica_id})
+      refute Map.has_key?(page_emitted_context, {Hologram, :replica_token})
+    end
+
+    test "raises ArgumentError when replica_id is not provided for initial page requests" do
+      ETS.put(PageDigestRegistryStub.ets_table_name(), Module28, :dummy_module_28_digest)
+
+      opts = [
+        csrf_token: @csrf_token,
+        initial_page?: true,
+        instance_id: @instance_id,
+        replica_token: @replica_token
+      ]
+
+      assert_raise ArgumentError, "replica_id is required for initial page requests", fn ->
+        render_page_without_tree(Module28, @params, @server, opts)
+      end
+    end
+
+    test "raises ArgumentError when replica_id is nil for initial page requests" do
+      ETS.put(PageDigestRegistryStub.ets_table_name(), Module28, :dummy_module_28_digest)
+
+      opts = [
+        csrf_token: @csrf_token,
+        initial_page?: true,
+        instance_id: @instance_id,
+        replica_id: nil,
+        replica_token: @replica_token
+      ]
+
+      assert_raise ArgumentError, "replica_id is required for initial page requests", fn ->
+        render_page_without_tree(Module28, @params, @server, opts)
+      end
+    end
+
+    test "raises ArgumentError when replica_token is not provided for initial page requests" do
+      ETS.put(PageDigestRegistryStub.ets_table_name(), Module28, :dummy_module_28_digest)
+
+      opts = [
+        csrf_token: @csrf_token,
+        initial_page?: true,
+        instance_id: @instance_id,
+        replica_id: @replica_id
+      ]
+
+      assert_raise ArgumentError, "replica_token is required for initial page requests", fn ->
+        render_page_without_tree(Module28, @params, @server, opts)
+      end
+    end
+
+    test "raises ArgumentError when replica_token is nil for initial page requests" do
+      ETS.put(PageDigestRegistryStub.ets_table_name(), Module28, :dummy_module_28_digest)
+
+      opts = [
+        csrf_token: @csrf_token,
+        initial_page?: true,
+        instance_id: @instance_id,
+        replica_id: @replica_id,
+        replica_token: nil
+      ]
+
+      assert_raise ArgumentError, "replica_token is required for initial page requests", fn ->
+        render_page_without_tree(Module28, @params, @server, opts)
+      end
+    end
+
     test "instance_id is not required for subsequent page requests" do
       ETS.put(PageDigestRegistryStub.ets_table_name(), Module28, :dummy_module_28_digest)
 
@@ -2351,7 +2516,7 @@ defmodule Hologram.Template.RendererTest do
 
       page_emitted_context = component_registry["page"].struct.emitted_context
 
-      refute Map.has_key?(page_emitted_context, {Hologram.Runtime, :instance_id})
+      refute Map.has_key?(page_emitted_context, {Hologram, :instance_id})
     end
 
     test "framework sets server.cid to \"layout\" during layout init/3" do
@@ -2362,27 +2527,50 @@ defmodule Hologram.Template.RendererTest do
       assert registry["layout"].struct.state.observed_cid == "layout"
     end
 
-    test "returns the tree the HTML is printed from, once the mount data is put back" do
+    # A token is a JavaScript expression and means nothing outside a script, so one that reaches
+    # the markup through what someone typed stays the text it is. Substituting there would put a
+    # value into an attribute along with the quotes that end it.
+    test "leaves a placeholder the markup carries as text and in an attribute alone" do
+      ETS.put(
+        PageDigestRegistryStub.ets_table_name(),
+        Module104,
+        "102790adb6c3b1956db310be523a7693"
+      )
+
+      %{mount_data: mount_data, tree: tree} =
+        render_page(Module104, %{label: "$PAGE_PARAMS_JS_PLACEHOLDER"}, @server, @opts)
+
+      printed =
+        tree
+        |> interpolate_js_in_tree(mount_replacements(mount_data))
+        |> print_dom()
+
+      assert String.contains?(
+               printed,
+               ~s(<div title="$PAGE_PARAMS_JS_PLACEHOLDER">$PAGE_PARAMS_JS_PLACEHOLDER</div>)
+             )
+    end
+
+    # The tree and the mount data are one render split in two. Putting the data back into the
+    # tree's scripts is what the document path does, so it has to yield a document holding the
+    # values rather than the tokens - the navigating client reaches the same place by reading
+    # the data from the payload instead.
+    test "returns a tree whose scripts take the mount data back" do
       ETS.put(
         PageDigestRegistryStub.ets_table_name(),
         Module48,
         "102790adb6c3b1956db310be523a7693"
       )
 
-      %{html: html, mount_data: mount_data, tree: tree} =
-        render_page(Module48, @params, @server, @opts)
+      %{mount_data: mount_data, tree: tree} = render_page(Module48, @params, @server, @opts)
 
-      # The two projections are the same render. They differ only in that the HTML has the mount
-      # data inlined, so putting it back into the printed tree must reproduce the HTML exactly.
       printed =
         tree
+        |> interpolate_js_in_tree(mount_replacements(mount_data))
         |> print_dom()
-        |> String.replace("$ASSET_MANIFEST_JS_PLACEHOLDER", mount_data.asset_manifest)
-        |> String.replace("$COMPONENT_REGISTRY_JS_PLACEHOLDER", mount_data.component_registry)
-        |> String.replace("$PAGE_MODULE_JS_PLACEHOLDER", mount_data.page_module)
-        |> String.replace("$PAGE_PARAMS_JS_PLACEHOLDER", mount_data.page_params)
 
-      assert printed == html
+      refute String.contains?(printed, "$PAGE_MODULE_JS_PLACEHOLDER")
+      assert String.contains?(printed, mount_data.page_module)
     end
 
     test "leaves every placeholder in the tree's scripts, mount data included" do
@@ -2418,7 +2606,12 @@ defmodule Hologram.Template.RendererTest do
         "102790adb6c3b1956db310be523a7693"
       )
 
-      %{html: html, mount_data: mount_data} = render_page(Module48, @params, @server, @opts)
+      %{mount_data: mount_data, tree: tree} = render_page(Module48, @params, @server, @opts)
+
+      html =
+        tree
+        |> interpolate_js_in_tree(mount_replacements(mount_data))
+        |> print_dom()
 
       assert mount_data.page_module ==
                ~s/Type.atom("Elixir.Hologram.Test.Fixtures.Template.Renderer.Module48")/
@@ -2431,6 +2624,32 @@ defmodule Hologram.Template.RendererTest do
       for value <- Map.values(mount_data) do
         assert String.contains?(html, value)
       end
+    end
+
+    # The mount data goes into a script element as source, and a param comes from the URL - so a
+    # param spelling a closing tag would end that element and put what follows it into the
+    # document as markup. The escape leaves the string the page carries unchanged.
+    test "carries a param that spells a closing tag without ending the script" do
+      ETS.put(
+        PageDigestRegistryStub.ets_table_name(),
+        Module48,
+        "102790adb6c3b1956db310be523a7693"
+      )
+
+      {html, _component_registry, _server_struct} =
+        render_page_without_tree(
+          Module48,
+          %{probe: "</script><script>alert(1)</script>"},
+          @server,
+          @opts
+        )
+
+      refute String.contains?(html, "</script><script>alert(1)")
+
+      assert String.contains?(
+               html,
+               ~S|Type.bitstring("\u{3C}/script>\u{3C}script>alert(1)\u{3C}/script>")|
+             )
     end
   end
 
@@ -3065,72 +3284,114 @@ defmodule Hologram.Template.RendererTest do
     end
   end
 
-  describe "interpolate_self_echoes_js/2" do
-    test "substitutes the placeholder with the encoded list of actions" do
-      html = ~s'before selfEchoes: $SELF_ECHOES_JS_PLACEHOLDER after'
+  describe "interpolate_js_in_tree/2" do
+    test "substitutes the placeholder inside a script element's text" do
+      tree =
+        {:element, "script", [],
+         [{:text, "window.registry = $COMPONENT_REGISTRY_JS_PLACEHOLDER;"}]}
 
-      actions = [
-        %Hologram.Component.Action{
-          name: :my_action,
-          params: %{text: "hi"},
-          target: "page"
-        }
+      result =
+        Renderer.interpolate_js_in_tree(tree, %{
+          "$COMPONENT_REGISTRY_JS_PLACEHOLDER" => "Type.map([])"
+        })
+
+      assert result == {:element, "script", [], [{:text, "window.registry = Type.map([]);"}]}
+    end
+
+    test "substitutes every occurrence of the placeholder" do
+      tree =
+        {:element, "script", [],
+         [{:text, "$PAGE_PARAMS_JS_PLACEHOLDER, $PAGE_PARAMS_JS_PLACEHOLDER"}]}
+
+      result =
+        Renderer.interpolate_js_in_tree(tree, %{"$PAGE_PARAMS_JS_PLACEHOLDER" => "Type.map([])"})
+
+      assert result == {:element, "script", [], [{:text, "Type.map([]), Type.map([])"}]}
+    end
+
+    test "reaches a script element nested inside other elements" do
+      tree =
+        {:element, "html", [],
+         [
+           {:element, "head", [],
+            [{:element, "script", [], [{:text, "$PAGE_MODULE_JS_PLACEHOLDER"}]}]}
+         ]}
+
+      result =
+        Renderer.interpolate_js_in_tree(tree, %{
+          "$PAGE_MODULE_JS_PLACEHOLDER" => ~s/Type.atom("abc")/
+        })
+
+      assert result ==
+               {:element, "html", [],
+                [
+                  {:element, "head", [],
+                   [{:element, "script", [], [{:text, ~s/Type.atom("abc")/}]}]}
+                ]}
+    end
+
+    test "reaches every script element in a node list" do
+      tree = [
+        {:element, "script", [], [{:text, "$SELF_ECHOES_JS_PLACEHOLDER"}]},
+        {:element, "script", [], [{:text, "$SELF_ECHOES_JS_PLACEHOLDER"}]}
       ]
 
-      result = Renderer.interpolate_self_echoes_js(html, actions)
+      result =
+        Renderer.interpolate_js_in_tree(tree, %{"$SELF_ECHOES_JS_PLACEHOLDER" => "Type.list([])"})
+
+      assert result == [
+               {:element, "script", [], [{:text, "Type.list([])"}]},
+               {:element, "script", [], [{:text, "Type.list([])"}]}
+             ]
+    end
+
+    test "leaves text outside a script element untouched" do
+      tree = {:element, "div", [], [{:text, "$SELF_ECHOES_JS_PLACEHOLDER"}]}
+
+      result =
+        Renderer.interpolate_js_in_tree(tree, %{"$SELF_ECHOES_JS_PLACEHOLDER" => "Type.list([])"})
+
+      assert result == {:element, "div", [], [{:text, "$SELF_ECHOES_JS_PLACEHOLDER"}]}
+    end
+
+    # A token the map does not answer for belongs to whoever interpolates next, so it has to
+    # survive this pass exactly as it was.
+    test "leaves a placeholder the map does not answer for alone" do
+      tree = {:element, "script", [], [{:text, "$SELF_ECHOES_JS_PLACEHOLDER"}]}
+
+      result =
+        Renderer.interpolate_js_in_tree(tree, %{"$PAGE_MODULE_JS_PLACEHOLDER" => "Type.nil()"})
+
+      assert result == {:element, "script", [], [{:text, "$SELF_ECHOES_JS_PLACEHOLDER"}]}
+    end
+
+    # The values these carry hold whatever a URL, a database or a component's state put there.
+    # Read as a placeholder in turn, a value naming another token would have that token's
+    # JavaScript inserted inside the string it travels in, whose quotes end that string.
+    test "leaves a placeholder carried by an inserted value unsubstituted" do
+      tree = {:element, "script", [], [{:text, "p = $PAGE_PARAMS_JS_PLACEHOLDER;"}]}
+
+      result =
+        Renderer.interpolate_js_in_tree(tree, %{
+          "$PAGE_MODULE_JS_PLACEHOLDER" => ~s/Type.atom("abc")/,
+          "$PAGE_PARAMS_JS_PLACEHOLDER" => ~s/Type.bitstring("$PAGE_MODULE_JS_PLACEHOLDER")/
+        })
+
+      # The `$` is spelled as an escape, so the string still reads as the token and no later
+      # pass can act on it.
+      assert result ==
+               {:element, "script", [],
+                [{:text, ~S/p = Type.bitstring("\u0024PAGE_MODULE_JS_PLACEHOLDER");/}]}
+    end
+
+    test "leaves attribute values untouched" do
+      tree = {:element, "script", [{"data-info", [text: "$SELF_ECHOES_JS_PLACEHOLDER"]}], []}
+
+      result =
+        Renderer.interpolate_js_in_tree(tree, %{"$SELF_ECHOES_JS_PLACEHOLDER" => "Type.list([])"})
 
       assert result ==
-               ~s'before selfEchoes: Type.list([Type.map([[Type.atom("__struct__"), Type.atom("Elixir.Hologram.Component.Action")], [Type.atom("delay"), Type.integer(0n)], [Type.atom("name"), Type.atom("my_action")], [Type.atom("params"), Type.map([[Type.atom("text"), Type.bitstring("hi")]])], [Type.atom("target"), Type.bitstring("page")]])]) after'
-    end
-
-    test "substitutes the placeholder with an empty list when no actions are provided" do
-      html = ~s'before selfEchoes: $SELF_ECHOES_JS_PLACEHOLDER after'
-
-      result = Renderer.interpolate_self_echoes_js(html, [])
-
-      assert result == ~s'before selfEchoes: Type.list([]) after'
-    end
-  end
-
-  describe "interpolate_sub_receipt_adds_js/2" do
-    test "substitutes the placeholder with the encoded list of subscription receipts" do
-      html = ~s'before subReceiptAdds: $SUB_RECEIPT_ADDS_JS_PLACEHOLDER after'
-
-      sub_receipt_adds = [{:room_a, "page", "signed-token"}]
-
-      result = Renderer.interpolate_sub_receipt_adds_js(html, sub_receipt_adds)
-
-      assert result ==
-               ~s'before subReceiptAdds: Type.list([Type.tuple([Type.atom("room_a"), Type.bitstring("page"), Type.bitstring("signed-token")])]) after'
-    end
-
-    test "substitutes the placeholder with an empty list when no receipts are provided" do
-      html = ~s'before subReceiptAdds: $SUB_RECEIPT_ADDS_JS_PLACEHOLDER after'
-
-      result = Renderer.interpolate_sub_receipt_adds_js(html, [])
-
-      assert result == ~s'before subReceiptAdds: Type.list([]) after'
-    end
-  end
-
-  describe "interpolate_sub_receipt_drops_js/2" do
-    test "substitutes the placeholder with the encoded list of subscription drops" do
-      html = ~s'before subReceiptDrops: $SUB_RECEIPT_DROPS_JS_PLACEHOLDER after'
-
-      sub_receipt_drops = [{:room_a, "page"}]
-
-      result = Renderer.interpolate_sub_receipt_drops_js(html, sub_receipt_drops)
-
-      assert result ==
-               ~s'before subReceiptDrops: Type.list([Type.tuple([Type.atom("room_a"), Type.bitstring("page")])]) after'
-    end
-
-    test "substitutes the placeholder with an empty list when no drops are provided" do
-      html = ~s'before subReceiptDrops: $SUB_RECEIPT_DROPS_JS_PLACEHOLDER after'
-
-      result = Renderer.interpolate_sub_receipt_drops_js(html, [])
-
-      assert result == ~s'before subReceiptDrops: Type.list([]) after'
+               {:element, "script", [{"data-info", [text: "$SELF_ECHOES_JS_PLACEHOLDER"]}], []}
     end
   end
 
@@ -3460,9 +3721,20 @@ defmodule Hologram.Template.RendererTest do
 
   # The tree projection is covered by its own tests - these tests assert the projections the
   # pre-tree render returned, unchanged.
+  # The document the HTML path serves: the tree with its mount data put back, printed. The
+  # renderer hands the two out separately, because the navigation path carries them separately.
   defp render_page_without_tree(page_module, params, server_struct, opts) do
-    %{component_registry: component_registry, html: html, server_struct: mutated_server_struct} =
-      render_page(page_module, params, server_struct, opts)
+    %{
+      component_registry: component_registry,
+      mount_data: mount_data,
+      server_struct: mutated_server_struct,
+      tree: tree
+    } = render_page(page_module, params, server_struct, opts)
+
+    html =
+      tree
+      |> interpolate_js_in_tree(mount_replacements(mount_data))
+      |> print_dom()
 
     {html, component_registry, mutated_server_struct}
   end

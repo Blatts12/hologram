@@ -10,8 +10,11 @@ defmodule Hologram.Test.Stubs do
   alias Hologram.Commons.FileUtils
   alias Hologram.Commons.PLT
   alias Hologram.Commons.ProcessUtils
+  alias Hologram.Compiler
+  alias Hologram.DB.QueryCache
   alias Hologram.Reflection
   alias Hologram.Router.PageModuleResolver
+  alias Hologram.Sync.PageWindows, as: SyncPageWindows
 
   # The fixture pages the tests that start the page module resolver request.
   @page_module_resolver_pages [
@@ -89,8 +92,62 @@ defmodule Hologram.Test.Stubs do
     :ok
   end
 
+  def setup_query_cache(stub, start_link \\ true) do
+    stub_with(QueryCacheMock, stub)
+
+    :persistent_term.erase(stub.persistent_term_key())
+
+    dump_query_cache(stub, [
+      Hologram.Test.Fixtures.Compiler.QueryExtractor.Module1,
+      Hologram.Test.Fixtures.Component.Module11
+    ])
+
+    if start_link do
+      QueryCache.start_link([])
+    end
+
+    :ok
+  end
+
+  @doc """
+  Writes the query cache dump the given stub reads, holding the registered queries of the given
+  component modules - the compile task's artifact, built the same way but for a chosen set.
+  """
+  @spec dump_query_cache(module, list(module)) :: :ok
+  def dump_query_cache(stub, component_modules) do
+    dump_path = stub.dump_path()
+
+    File.rm(dump_path)
+
+    queries = Compiler.build_queries(component_modules, Reflection.list_entities())
+
+    PLT.start()
+    |> PLT.put(Map.to_list(queries))
+    |> PLT.dump(dump_path)
+
+    :ok
+  end
+
   def setup_server(stub) do
     stub_with(ServerMock, stub)
+    :ok
+  end
+
+  def setup_sync_page_windows(stub, start_link \\ true) do
+    stub_with(SyncPageWindowsMock, stub)
+
+    setup_sync_page_windows_dump(stub)
+
+    ets_table_name = stub.ets_table_name()
+
+    if ETS.table_exists?(ets_table_name) do
+      ETS.delete(ets_table_name)
+    end
+
+    if start_link do
+      SyncPageWindows.start_link([])
+    end
+
     :ok
   end
 
@@ -182,6 +239,56 @@ defmodule Hologram.Test.Stubs do
       end
 
       alias alias!(unquote(random_module).PageModuleResolverStub)
+    end
+  end
+
+  defmacro use_module_stub(:query_cache) do
+    random_module = random_module()
+
+    quote do
+      defmodule alias!(unquote(random_module).QueryCacheStub) do
+        @behaviour QueryCache
+
+        def dump_path do
+          Path.join([
+            Reflection.tmp_dir(),
+            "tests",
+            "stubs",
+            "query_cache",
+            "dump_path_0",
+            "#{unquote(random_string())}.plt"
+          ])
+        end
+
+        def persistent_term_key, do: unquote(random_atom())
+      end
+
+      alias alias!(unquote(random_module).QueryCacheStub)
+    end
+  end
+
+  defmacro use_module_stub(:sync_page_windows) do
+    random_module = random_module()
+
+    quote do
+      defmodule alias!(unquote(random_module).SyncPageWindowsStub) do
+        @behaviour SyncPageWindows
+
+        def dump_path do
+          Path.join([
+            Reflection.tmp_dir(),
+            "tests",
+            "stubs",
+            "sync_page_windows",
+            "dump_path_0",
+            "#{unquote(random_string())}.plt"
+          ])
+        end
+
+        def ets_table_name, do: unquote(random_atom())
+      end
+
+      alias alias!(unquote(random_module).SyncPageWindowsStub)
     end
   end
 
@@ -288,6 +395,19 @@ defmodule Hologram.Test.Stubs do
     plt = PLT.start(items: items)
     PLT.dump(plt, dump_path)
     PLT.stop(plt)
+
+    :ok
+  end
+
+  defp setup_sync_page_windows_dump(stub) do
+    dump_path = stub.dump_path()
+
+    File.rm(dump_path)
+
+    PLT.start()
+    |> PLT.put(:page_a, ["window_a1", "window_a2"])
+    |> PLT.put(:page_b, [])
+    |> PLT.dump(dump_path)
 
     :ok
   end

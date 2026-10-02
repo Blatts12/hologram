@@ -1,14 +1,51 @@
 defmodule Hologram.CompilerTest do
   use Hologram.Test.BasicCase, async: false
+  use Hologram.DB
+
   import Hologram.Compiler
 
+  alias Hologram.Auth
+  alias Hologram.Auth.RoleGrant
   alias Hologram.Commons.PLT
   alias Hologram.Compiler
   alias Hologram.Compiler.CallGraph
   alias Hologram.Compiler.Context
   alias Hologram.Compiler.Encoder
   alias Hologram.Compiler.IR
+  alias Hologram.Entity.Model
+  alias Hologram.Query
+  alias Hologram.Query.Placeholder
+  alias Hologram.Query.Registry
+  alias Hologram.Query.Window
   alias Hologram.Reflection
+  alias Hologram.Sync.Frame
+
+  alias Hologram.Test.Fixtures.Component.Module11, as: ComponentModule11
+  alias Hologram.Test.Fixtures.Component.Module15, as: ComponentModule15
+  alias Hologram.Test.Fixtures.Component.Module16, as: ComponentModule16
+  alias Hologram.Test.Fixtures.Component.Module17, as: ComponentModule17
+  alias Hologram.Test.Fixtures.Component.Module18, as: ComponentModule18
+  alias Hologram.Test.Fixtures.Component.Module19, as: ComponentModule19
+  alias Hologram.Test.Fixtures.Component.Module20, as: ComponentModule20
+  alias Hologram.Test.Fixtures.Component.Module24, as: ComponentModule24
+  alias Hologram.Test.Fixtures.Component.Module28, as: ComponentModule28
+  alias Hologram.Test.Fixtures.Component.Module29, as: ComponentModule29
+  alias Hologram.Test.Fixtures.Entity.Module1, as: Entity1
+  alias Hologram.Test.Fixtures.Entity.Module10, as: Entity10
+  alias Hologram.Test.Fixtures.Entity.Module12, as: Entity12
+  alias Hologram.Test.Fixtures.Entity.Module13, as: Entity13
+  alias Hologram.Test.Fixtures.Entity.Module15, as: Entity15
+  alias Hologram.Test.Fixtures.Entity.Module19, as: Entity19
+  alias Hologram.Test.Fixtures.Entity.Module2, as: Entity2
+  alias Hologram.Test.Fixtures.Entity.Module3, as: Entity3
+  alias Hologram.Test.Fixtures.Entity.Module4, as: Entity4
+  alias Hologram.Test.Fixtures.Job.Module1, as: JobModule1
+  alias Hologram.Test.Fixtures.Page.Module10, as: PageModule10
+  alias Hologram.Test.Fixtures.Page.Module11, as: PageModule11
+  alias Hologram.Test.Fixtures.Page.Module12, as: PageModule12
+  alias Hologram.Test.Fixtures.Page.Module7, as: PageModule7
+  alias Hologram.Test.Fixtures.Page.Module8, as: PageModule8
+  alias Hologram.Test.Fixtures.Policy.Module1, as: PolicyEntity
 
   alias Hologram.Test.Fixtures.Compiler.Module1
   alias Hologram.Test.Fixtures.Compiler.Module11
@@ -43,6 +80,7 @@ defmodule Hologram.CompilerTest do
   alias Hologram.Test.Fixtures.Compiler.Module40
   alias Hologram.Test.Fixtures.Compiler.Module8
   alias Hologram.Test.Fixtures.Compiler.Module9
+  alias Hologram.Test.Fixtures.Compiler.QueryExtractor.Module1, as: QueryExtractorModule1
 
   @root_dir Reflection.root_dir()
   @assets_dir Path.join(@root_dir, "assets")
@@ -50,6 +88,11 @@ defmodule Hologram.CompilerTest do
   @erlang_js_dir Path.join(@js_dir, "erlang")
 
   @fixtures_compiler_dir Path.join(@fixtures_dir, "compiler")
+  @empty_sync_constants %{
+    entity_types: MapSet.new(),
+    permission_checking?: false,
+    prop_params: %{}
+  }
   @tmp_dir Reflection.tmp_dir()
 
   # Bundles an entry file that runs the given JavaScript, in a tmp dir of the given name, with a
@@ -1182,7 +1225,516 @@ defmodule Hologram.CompilerTest do
     end
   end
 
-  describe "build_runtime_js/6" do
+  describe "build_page_windows/3" do
+    setup %{call_graph: call_graph} do
+      [page_windows: build_page_windows(Reflection.list_pages(), call_graph)]
+    end
+
+    test "gives a page the window of a component it renders", %{page_windows: page_windows} do
+      window_id =
+        Entity2
+        |> filter(a: true)
+        |> Query.normalize()
+        |> Window.derive()
+        |> Registry.id()
+
+      assert page_windows[PageModule8] == [window_id]
+    end
+
+    test "gives a page reaching no query no windows", %{page_windows: page_windows} do
+      assert page_windows[PageModule7] == []
+    end
+
+    test "answers for every page it was given", %{page_windows: page_windows} do
+      answered_pages =
+        page_windows
+        |> Map.keys()
+        |> Enum.sort()
+
+      assert answered_pages == Enum.sort(Reflection.list_pages())
+    end
+
+    # What a client evaluates permissions against is grant rows, so a page checking them on the
+    # client downloads them like any other rows it reads.
+    test "gives a permission-checking page the grants window", %{call_graph: call_graph} do
+      page_windows = build_page_windows([PageModule7], call_graph, [PageModule7])
+
+      assert page_windows[PageModule7] == [Registry.id(Auth.grants_window())]
+    end
+
+    test "leaves the grants window out of a page that checks nothing", %{
+      page_windows: page_windows
+    } do
+      refute Registry.id(Auth.grants_window()) in page_windows[PageModule7]
+    end
+
+    test "keeps a permission-checking page's own windows beside the grants window", %{
+      call_graph: call_graph
+    } do
+      page_windows = build_page_windows([PageModule8], call_graph, [PageModule8])
+
+      assert Registry.id(Auth.grants_window()) in page_windows[PageModule8]
+      assert length(page_windows[PageModule8]) == 2
+    end
+
+    # The grant entity is an entity type like any other, so a page's own query can derive the very
+    # window the permission check downloads - and then it is named once rather than subscribed to
+    # twice.
+    test "names the grants window once for a page whose own query derives it", %{
+      call_graph: call_graph
+    } do
+      page_windows = build_page_windows([PageModule12], call_graph, [PageModule12])
+
+      assert page_windows[PageModule12] == [Registry.id(Auth.grants_window())]
+    end
+  end
+
+  # The gate reads the graph the bundles come from, so what registers the window is what actually
+  # ships - not every mention of the check in the project.
+  # can?/3 and the grant verbs read grant rows in the browser, which is what makes a page a
+  # permission checker - and every one of them is hand-ported, or a page reaching it would have the
+  # verb's server call tree transpiled into its bundle. Two lists in two modules; this ties them.
+  test "every permission MFA is a manually ported one" do
+    assert permission_mfas() -- CallGraph.manually_ported_elixir_mfas() == []
+  end
+
+  describe "operation_asks/2" do
+    # The offending asks are built as IR rather than as file fixtures, because a file fixture
+    # would refuse the build in the compile.hologram Mix task tests, which compile the whole
+    # project. The module's name has to exist as an atom before IR.for_code/2 resolves it, which
+    # spelling it here as a literal guarantees.
+    @asker Hologram.Test.Fixtures.Compiler.OperationAsker
+
+    defp asker_plt(code) do
+      PLT.put(PLT.start(), @asker, IR.for_code(code, %Context{}))
+    end
+
+    defp asker_graph(edges) do
+      graph = CallGraph.start()
+
+      Enum.each(edges, fn {function, arity, target} ->
+        CallGraph.add_edge(graph, {@asker, function, arity}, target)
+      end)
+
+      graph
+    end
+
+    test "reads every ask of every caller, sorted by the calling function" do
+      plt =
+        asker_plt(~S"""
+        defmodule Hologram.Test.Fixtures.Compiler.OperationAsker do
+          def h(user, operation, entity), do: Hologram.Auth.can?(user, operation, entity)
+          def f(user, entity), do: Hologram.Auth.can?(user, :nope, entity)
+          def g(user, entity), do: Hologram.Auth.can?(user, {:grant_role, :editr}, entity)
+        end
+        """)
+
+      graph =
+        asker_graph([
+          {:f, 2, {Hologram.Auth, :can?, 3}},
+          {:g, 2, {Hologram.Auth, :can?, 3}},
+          {:h, 3, {Hologram.Auth, :can?, 3}}
+        ])
+
+      assert operation_asks(graph, plt) == [
+               %{line: 3, mfa: {@asker, :f, 2}, operation: :nope},
+               %{line: 4, mfa: {@asker, :g, 2}, operation: {:grant_role, :editr}},
+               %{line: 2, mfa: {@asker, :h, 3}, operation: :dynamic}
+             ]
+    end
+
+    test "reads the operation a claim stage names" do
+      plt =
+        asker_plt(~S"""
+        defmodule Hologram.Test.Fixtures.Compiler.OperationAsker do
+          def f(entity), do: Hologram.Query.authorize(entity, :publsh)
+        end
+        """)
+
+      graph = asker_graph([{:f, 1, {Hologram.Query, :authorize, 2}}])
+
+      assert operation_asks(graph, plt) == [
+               %{line: 2, mfa: {@asker, :f, 1}, operation: :publsh}
+             ]
+    end
+
+    test "reads the authorize option of a job enqueue" do
+      plt =
+        asker_plt(~S"""
+        defmodule Hologram.Test.Fixtures.Compiler.OperationAsker do
+          def f(values), do: Hologram.Job.create(Hologram.Test.Fixtures.Job.Module1, values, authorize: :genrate)
+          def g(values), do: Hologram.Job.create!(Hologram.Test.Fixtures.Job.Module1, values, authorize: :genrate)
+        end
+        """)
+
+      graph =
+        asker_graph([
+          {:f, 1, {Hologram.Job, :create, 3}},
+          {:g, 1, {Hologram.Job, :create!, 3}}
+        ])
+
+      assert operation_asks(graph, plt) == [
+               %{line: 2, mfa: {@asker, :f, 1}, operation: :genrate},
+               %{line: 3, mfa: {@asker, :g, 1}, operation: :genrate}
+             ]
+    end
+
+    test "passes over an enqueue claiming the server's authority" do
+      plt =
+        asker_plt(~S"""
+        defmodule Hologram.Test.Fixtures.Compiler.OperationAsker do
+          def f(values), do: Hologram.Job.create(Hologram.Test.Fixtures.Job.Module1, values, trust: true)
+        end
+        """)
+
+      graph = asker_graph([{:f, 1, {Hologram.Job, :create, 3}}])
+
+      assert operation_asks(graph, plt) == []
+    end
+
+    test "marks an enqueue whose options are computed as dynamic" do
+      plt =
+        asker_plt(~S"""
+        defmodule Hologram.Test.Fixtures.Compiler.OperationAsker do
+          def f(values, opts), do: Hologram.Job.create(Hologram.Test.Fixtures.Job.Module1, values, opts)
+        end
+        """)
+
+      graph = asker_graph([{:f, 2, {Hologram.Job, :create, 3}}])
+
+      assert operation_asks(graph, plt) == [
+               %{line: 2, mfa: {@asker, :f, 2}, operation: :dynamic}
+             ]
+    end
+
+    test "skips a caller absent from the IR PLT" do
+      graph = asker_graph([{:f, 2, {Hologram.Auth, :can?, 3}}])
+
+      assert operation_asks(graph, PLT.start()) == []
+    end
+
+    test "reads a fixture page's template through the project's own graph", %{
+      call_graph: call_graph,
+      ir_plt: ir_plt
+    } do
+      asks = operation_asks(call_graph, ir_plt)
+
+      assert Enum.any?(asks, &match?(%{mfa: {PageModule10, :template, 0}, operation: :read}, &1))
+      assert Enum.any?(asks, &match?(%{mfa: {PageModule11, :command, 3}, operation: :read}, &1))
+
+      assert Enum.any?(
+               asks,
+               &match?(
+                 %{mfa: {Hologram.DB.Writer, :evaluate_operation!, 2}, operation: :dynamic},
+                 &1
+               )
+             )
+    end
+  end
+
+  describe "pages_checking_permissions/2" do
+    test "names a page whose template checks permissions", %{call_graph: call_graph} do
+      pages = pages_checking_permissions(Reflection.list_pages(), call_graph)
+
+      assert PageModule10 in pages
+    end
+
+    test "passes over a page that checks permissions only in a command handler", %{
+      call_graph: call_graph
+    } do
+      pages = pages_checking_permissions(Reflection.list_pages(), call_graph)
+
+      refute PageModule11 in pages
+    end
+
+    test "passes over a page that checks nothing", %{call_graph: call_graph} do
+      pages = pages_checking_permissions(Reflection.list_pages(), call_graph)
+
+      refute PageModule7 in pages
+    end
+
+    # No fixture page calls the grant verbs in its client code, deliberately: until the verbs are
+    # registered as ported, a page reaching one would have its server call tree transpiled into
+    # its bundle. The edge is added to a clone instead - a page's template is client code - and
+    # can?/3 is taken OUT of that clone first: the verbs call it, so in the real graph a page
+    # reaching a verb reaches can? too and would qualify under the old rule alone. Once the verbs
+    # are ported their subtree is pruned from every build, which is the state this pins.
+    test "names a page whose client code grants a role", %{call_graph: call_graph} do
+      graph = CallGraph.clone(call_graph)
+      CallGraph.remove_vertex(graph, {Hologram.Auth, :can?, 3})
+      CallGraph.add_edge(graph, {PageModule7, :template, 0}, {Hologram.Auth, :grant_role, 3})
+
+      assert PageModule7 in pages_checking_permissions(Reflection.list_pages(), graph)
+    end
+
+    test "names a page whose client code revokes a role", %{call_graph: call_graph} do
+      graph = CallGraph.clone(call_graph)
+      CallGraph.remove_vertex(graph, {Hologram.Auth, :can?, 3})
+      CallGraph.add_edge(graph, {PageModule7, :template, 0}, {Hologram.Auth, :revoke_role, 3})
+
+      assert PageModule7 in pages_checking_permissions(Reflection.list_pages(), graph)
+    end
+  end
+
+  describe "build_queries/2" do
+    setup do
+      [entity_types: Reflection.list_entities()]
+    end
+
+    test "collects the entries, prop params and windows of the given components", %{
+      entity_types: entity_types
+    } do
+      queries = build_queries([QueryExtractorModule1, ComponentModule11], entity_types)
+
+      module_1_term =
+        Entity2
+        |> filter(a: true)
+        |> order_by(:c)
+        |> Query.normalize()
+
+      module_11_term =
+        Entity2
+        |> filter(b: {:>=, %Placeholder{name: :min_b}})
+        |> Query.normalize()
+
+      expected_entries = Registry.build([module_1_term, module_11_term])
+
+      assert queries.entries == expected_entries
+      assert queries.prop_params == %{{ComponentModule11, :entities} => [:min_b]}
+    end
+
+    # The grants window rides with every build's windows, whether or not a page subscribes to it -
+    # the build decides who asks, this is only where an id resolves back to a term.
+    test "registers the grants window beside the windows the queries download", %{
+      entity_types: entity_types
+    } do
+      queries = build_queries([QueryExtractorModule1], entity_types)
+      grants_window = Auth.grants_window()
+
+      assert queries.windows[Registry.id(grants_window)] == grants_window
+    end
+
+    test "leaves out a component declaring no parameterized capture", %{
+      entity_types: entity_types
+    } do
+      queries = build_queries([QueryExtractorModule1], entity_types)
+
+      assert queries.prop_params == %{}
+    end
+
+    test "collects a registered query reading a type with server-only attributes it does not reference",
+         %{entity_types: entity_types} do
+      queries = build_queries([ComponentModule20], entity_types)
+
+      assert map_size(queries.entries) == 1
+    end
+
+    test "raises for a registered query whose root type declares no allow lines", %{
+      entity_types: entity_types
+    } do
+      expected_msg =
+        "the registered query in Hologram.Test.Fixtures.Component.Module15 reads " <>
+          "Hologram.Test.Fixtures.Entity.Module1, which declares no allow lines - " <>
+          "default deny returns no rows to any session. Add allow lines, or drop the query."
+
+      assert_error Hologram.CompileError, expected_msg, fn ->
+        build_queries([ComponentModule15], entity_types)
+      end
+    end
+
+    test "raises for a registered query whose include target declares no allow lines", %{
+      entity_types: entity_types
+    } do
+      expected_msg =
+        "the registered query in Hologram.Test.Fixtures.Component.Module16 includes " <>
+          "Hologram.Test.Fixtures.Entity.Module1, which declares no allow lines - " <>
+          "default deny leaves the embed empty in every row. Add allow lines, or drop the include."
+
+      assert_error Hologram.CompileError, expected_msg, fn ->
+        build_queries([ComponentModule16], entity_types)
+      end
+    end
+
+    test "raises for a registered query filtering on a server-only attribute", %{
+      entity_types: entity_types
+    } do
+      expected_msg =
+        "the registered query in Hologram.Test.Fixtures.Component.Module17 filters or orders on " <>
+          "server_only attributes (Hologram.Test.Fixtures.Entity.Module15 :token) - the client " <>
+          "never holds those values, so it could not evaluate the reference locally. Drop the " <>
+          "reference, or read the rows through the trusted backend API."
+
+      assert_error Hologram.CompileError, expected_msg, fn ->
+        build_queries([ComponentModule17], entity_types)
+      end
+    end
+
+    test "raises for a registered query ordering on a server-only attribute", %{
+      entity_types: entity_types
+    } do
+      expected_msg =
+        "the registered query in Hologram.Test.Fixtures.Component.Module18 filters or orders on " <>
+          "server_only attributes (Hologram.Test.Fixtures.Entity.Module15 :token) - the client " <>
+          "never holds those values, so it could not evaluate the reference locally. Drop the " <>
+          "reference, or read the rows through the trusted backend API."
+
+      assert_error Hologram.CompileError, expected_msg, fn ->
+        build_queries([ComponentModule18], entity_types)
+      end
+    end
+
+    test "raises for a registered query filtering on a server-only attribute inside an include",
+         %{
+           entity_types: entity_types
+         } do
+      expected_msg =
+        "the registered query in Hologram.Test.Fixtures.Component.Module19 filters or orders on " <>
+          "server_only attributes (Hologram.Test.Fixtures.Entity.Module15 :token) - the client " <>
+          "never holds those values, so it could not evaluate the reference locally. Drop the " <>
+          "reference, or read the rows through the trusted backend API."
+
+      assert_error Hologram.CompileError, expected_msg, fn ->
+        build_queries([ComponentModule19], entity_types)
+      end
+    end
+
+    test "raises for a registered query claiming the server's authority", %{
+      entity_types: entity_types
+    } do
+      expected_msg =
+        "the registered query in Hologram.Test.Fixtures.Component.Module28 claims the server's " <>
+          "authority with trust() - a component's query is read for the session user on both " <>
+          "tiers, so it cannot claim another. Drop trust(), or read through the backend API in " <>
+          "a command."
+
+      assert_error Hologram.CompileError, expected_msg, fn ->
+        build_queries([ComponentModule28], entity_types)
+      end
+    end
+
+    # The refusal is the query stage's rather than a validation's - an include sub-term cannot
+    # carry the mark at all, so the build never reaches a term to object to.
+    test "raises for a registered query whose include claims the server's authority", %{
+      entity_types: entity_types
+    } do
+      expected_msg =
+        "include sub-terms take no trust mark - trust/1 goes on the query root and reads the " <>
+          "whole query, includes and all, on the server's authority"
+
+      assert_error ArgumentError, expected_msg, fn ->
+        build_queries([ComponentModule29], entity_types)
+      end
+    end
+  end
+
+  describe "build_queries_plt/2" do
+    test "holds the entries, prop params and windows, and dumps beside the other build artifacts" do
+      queries = build_queries([ComponentModule11], Reflection.list_entities())
+      opts = [build_dir: "/my_build_dir"]
+
+      {plt, dump_path} = build_queries_plt(queries, opts)
+
+      assert PLT.get_all(plt) == queries
+      assert dump_path == "/my_build_dir/queries.plt"
+    end
+  end
+
+  describe "build_sync_constants/3" do
+    setup %{call_graph: call_graph} do
+      [sync_constants: build_sync_constants(Reflection.list_pages(), call_graph)]
+    end
+
+    test "collects the types the queries the given pages reach read", %{
+      sync_constants: sync_constants
+    } do
+      assert MapSet.member?(sync_constants.entity_types, Entity15)
+    end
+
+    # An included type is one a client holds without any window being rooted in it - reaching it
+    # is what puts its rows in the database, so it is named here like any other.
+    test "collects the types those queries reach only through an include", %{
+      sync_constants: sync_constants
+    } do
+      assert MapSet.member?(sync_constants.entity_types, Entity3)
+      assert MapSet.member?(sync_constants.entity_types, Entity1)
+    end
+
+    # A client constructs and validates entities as well as reading them, and the type it
+    # constructs is the one it needs the declarations of. PageModule13 holds a Module4 in an
+    # action and no query anywhere reads that type, so mentioning it is the only way it can be
+    # here - and Module4 declares no policy, so the policied set cannot be carrying it either.
+    test "collects a type the given pages mention without querying", %{
+      sync_constants: sync_constants
+    } do
+      assert MapSet.member?(sync_constants.entity_types, Entity4)
+    end
+
+    # A type nothing reads and nothing mentions can never reach a client's database or be built
+    # there, so the build tells it nothing about one - not its attributes, and not that it exists.
+    # That is what keeps an app's other tables out of a file every page load serves.
+    test "leaves out a type no query reads and no page mentions", %{
+      sync_constants: sync_constants
+    } do
+      refute MapSet.member?(sync_constants.entity_types, Entity12)
+    end
+
+    test "collects the argument names of the parameterized captures those components declare", %{
+      sync_constants: sync_constants
+    } do
+      assert sync_constants.prop_params[ComponentModule24] == [entities: [:min_b]]
+    end
+
+    # A zero-arity capture binds nothing, so there is nothing to name - the client reads its
+    # absence the same way it reads an empty list.
+    test "leaves out a component declaring no parameterized capture", %{
+      sync_constants: sync_constants
+    } do
+      refute Map.has_key?(sync_constants.prop_params, ComponentModule16)
+    end
+
+    # The grant type reaches the model by being CHECKED rather than by being queried - its window
+    # is registered rather than extracted - so a client checking permissions locally would
+    # otherwise hold rows of a type the model never described. Both cases run over one page that
+    # queries no grants, so the flag is the only thing that differs between them.
+    test "names the grant type when a page checks permissions on the client", %{
+      call_graph: call_graph
+    } do
+      sync_constants = build_sync_constants([PageModule8], call_graph, true)
+
+      assert MapSet.member?(sync_constants.entity_types, RoleGrant)
+    end
+
+    test "leaves the grant type out when no page checks permissions on the client", %{
+      call_graph: call_graph
+    } do
+      sync_constants = build_sync_constants([PageModule8], call_graph, false)
+
+      refute MapSet.member?(sync_constants.entity_types, RoleGrant)
+    end
+
+    # A check's argument is whatever a template passes - a constructed struct as often as a
+    # queried row - so which types get checked is not derivable from the queries, and every
+    # policied type's rules ship. What stays out is exactly the types declaring no policy,
+    # which is what lets the client read an ABSENT entry as the server's own default deny.
+    test "names every policied type when a page checks permissions on the client", %{
+      call_graph: call_graph
+    } do
+      sync_constants = build_sync_constants([PageModule8], call_graph, true)
+
+      assert MapSet.member?(sync_constants.entity_types, PolicyEntity)
+      refute MapSet.member?(sync_constants.entity_types, Entity4)
+    end
+
+    test "leaves unqueried policied types out when no page checks permissions on the client", %{
+      call_graph: call_graph
+    } do
+      sync_constants = build_sync_constants([PageModule8], call_graph, false)
+
+      refute MapSet.member?(sync_constants.entity_types, PolicyEntity)
+    end
+  end
+
+  describe "build_runtime_js/7" do
     setup do
       on_exit(fn ->
         Application.delete_env(:hologram, :client_error_overlay)
@@ -1202,12 +1754,26 @@ defmodule Hologram.CompilerTest do
          } do
       {without_plt, checks_without_plt} =
         count_module_self_checks(fn ->
-          build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+          build_runtime_js(
+            runtime_mfas,
+            ir_plt,
+            encode_plt,
+            MapSet.new(),
+            [],
+            @empty_sync_constants,
+            js_dir: @js_dir
+          )
         end)
 
       {with_plt, checks_with_plt} =
         count_module_self_checks(fn ->
-          build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [],
+          build_runtime_js(
+            runtime_mfas,
+            ir_plt,
+            encode_plt,
+            MapSet.new(),
+            [],
+            @empty_sync_constants,
             js_dir: @js_dir,
             module_info_plt: module_info_plt
           )
@@ -1223,7 +1789,16 @@ defmodule Hologram.CompilerTest do
       ir_plt: ir_plt,
       runtime_mfas: runtime_mfas
     } do
-      js = build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert String.contains?(
                js,
@@ -1260,7 +1835,16 @@ defmodule Hologram.CompilerTest do
       ir_plt: ir_plt,
       runtime_mfas: runtime_mfas
     } do
-      js_1 = build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js_1 =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert {:ok, into_js} = PLT.get(encode_plt, {Enum, :into, 2})
 
@@ -1269,7 +1853,16 @@ defmodule Hologram.CompilerTest do
                ~s/Interpreter.defineElixirFunction("Enum", "into", 2, "public"/
              )
 
-      js_2 = build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js_2 =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert js_2 == js_1
     end
@@ -1279,7 +1872,16 @@ defmodule Hologram.CompilerTest do
       ir_plt: ir_plt,
       runtime_mfas: runtime_mfas
     } do
-      js_1 = build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js_1 =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       # A clone, so the PLT shared by the whole test module keeps its Enum entry.
       ir_plt_without_enum =
@@ -1288,7 +1890,13 @@ defmodule Hologram.CompilerTest do
         |> PLT.delete(Enum)
 
       js_2 =
-        build_runtime_js(runtime_mfas, ir_plt_without_enum, encode_plt, MapSet.new(), [],
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt_without_enum,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
           js_dir: @js_dir
         )
 
@@ -1309,11 +1917,20 @@ defmodule Hologram.CompilerTest do
           encode_plt,
           MapSet.new(),
           [],
+          @empty_sync_constants,
           js_dir: @js_dir
         )
 
       expected_js =
-        build_runtime_js(runtime_mfas, ir_plt, PLT.start(), MapSet.new(), [], js_dir: @js_dir)
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          PLT.start(),
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert js == expected_js
       assert PLT.get(encode_plt, undefined_mfa) == {:ok, nil}
@@ -1326,7 +1943,10 @@ defmodule Hologram.CompilerTest do
     } do
       mfas = [{Enum, :hologram_undefined_fun, 9} | runtime_mfas]
 
-      js_1 = build_runtime_js(mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js_1 =
+        build_runtime_js(mfas, ir_plt, encode_plt, MapSet.new(), [], @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       # A clone, so the PLT shared by the whole test module keeps its Enum entry.
       ir_plt_without_enum =
@@ -1335,7 +1955,15 @@ defmodule Hologram.CompilerTest do
         |> PLT.delete(Enum)
 
       js_2 =
-        build_runtime_js(mfas, ir_plt_without_enum, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+        build_runtime_js(
+          mfas,
+          ir_plt_without_enum,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert js_2 == js_1
     end
@@ -1345,7 +1973,16 @@ defmodule Hologram.CompilerTest do
       ir_plt: ir_plt,
       runtime_mfas: runtime_mfas
     } do
-      js = build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert String.contains?(
                js,
@@ -1360,7 +1997,16 @@ defmodule Hologram.CompilerTest do
       ir_plt: ir_plt,
       runtime_mfas: runtime_mfas
     } do
-      js = build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       {into_pos, _length} = :binary.match(js, ~s/defineElixirFunction("Enum", "into", 2/)
 
@@ -1375,7 +2021,16 @@ defmodule Hologram.CompilerTest do
       ir_plt: ir_plt,
       runtime_mfas: runtime_mfas
     } do
-      js = build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert String.contains?(
                js,
@@ -1397,7 +2052,16 @@ defmodule Hologram.CompilerTest do
       Application.put_env(:hologram, :client_error_overlay, true)
       Application.put_env(:hologram, :client_stacktraces, true)
 
-      js = build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert String.contains?(
                js,
@@ -1413,7 +2077,16 @@ defmodule Hologram.CompilerTest do
       Application.put_env(:hologram, :client_error_overlay, false)
       Application.put_env(:hologram, :client_stacktraces, false)
 
-      js = build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert String.contains?(
                js,
@@ -1428,7 +2101,16 @@ defmodule Hologram.CompilerTest do
     } do
       Application.put_env(:hologram, :client_stacktraces, true)
 
-      js = build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert String.contains?(
                js,
@@ -1446,7 +2128,13 @@ defmodule Hologram.CompilerTest do
       app_versions = [hologram: "0.1.0", my_app: "9.8.7"]
 
       js =
-        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), app_versions,
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          app_versions,
+          @empty_sync_constants,
           js_dir: @js_dir
         )
 
@@ -1466,7 +2154,13 @@ defmodule Hologram.CompilerTest do
       app_versions = [{:"my-app", "9.8.7"}]
 
       js =
-        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), app_versions,
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          app_versions,
+          @empty_sync_constants,
           js_dir: @js_dir
         )
 
@@ -1483,7 +2177,13 @@ defmodule Hologram.CompilerTest do
       app_versions = [hologram: "0.1.0", my_app: "9.8.7"]
 
       js =
-        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), app_versions,
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          app_versions,
+          @empty_sync_constants,
           js_dir: @js_dir
         )
 
@@ -1498,7 +2198,16 @@ defmodule Hologram.CompilerTest do
       Application.put_env(:hologram, :client_error_overlay, false)
       Application.put_env(:hologram, :client_stacktraces, true)
 
-      js = build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert String.contains?(
                js,
@@ -1523,7 +2232,16 @@ defmodule Hologram.CompilerTest do
 
       System.put_env("HOLOGRAM_ENV", "prod")
 
-      js = build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert js =~ ~r/globalThis\.Hologram\.config = \{errorOverlay: \w+, liveReload: false, /
     end
@@ -1531,7 +2249,10 @@ defmodule Hologram.CompilerTest do
     test "no JS imports", %{encode_plt: encode_plt, ir_plt: ir_plt, runtime_mfas: runtime_mfas} do
       mfas = reject_js_import_mfas(runtime_mfas)
 
-      js = build_runtime_js(mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js =
+        build_runtime_js(mfas, ir_plt, encode_plt, MapSet.new(), [], @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       refute String.contains?(js, "import {")
       refute String.contains?(js, "registerJsBindings")
@@ -1545,7 +2266,10 @@ defmodule Hologram.CompilerTest do
       mfas =
         reject_js_import_mfas(runtime_mfas) ++ [{Module18, :my_fun, 0}, {Module22, :my_fun, 0}]
 
-      js = build_runtime_js(mfas, ir_plt, encode_plt, MapSet.new(), [], js_dir: @js_dir)
+      js =
+        build_runtime_js(mfas, ir_plt, encode_plt, MapSet.new(), [], @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       js_fixture_1_path = Path.join([@fixtures_dir, "compiler", "js_fixture_1.mjs"])
       js_fixture_2_path = Path.join([@fixtures_dir, "compiler", "js_fixture_2.mjs"])
@@ -1560,6 +2284,603 @@ defmodule Hologram.CompilerTest do
                js,
                ~s'Interpreter.registerJsBindings({"Hologram.Test.Fixtures.Compiler.Module18": {"alias_1a": $1}, "Hologram.Test.Fixtures.Compiler.Module22": {"alias_2": $2}});'
              )
+    end
+
+    # A build declaring NO entity types says `null` here, so no client of it asks to sync - which
+    # cannot be shown from this suite, whose own model has entity types and whose reflection
+    # nothing stubs. It is asserted in the umbrella app, which declares none.
+    test "injects the model the bundle was built against", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      refute Reflection.list_entities() == []
+
+      js =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          encode_plt,
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/modelHash: "#{Model.hash()}", /)
+    end
+
+    # Every admitted attribute type in one entry, since a value's type is not recoverable from
+    # the value itself - the client reads a date, an enum and a uuid apart only by what this says.
+    test "injects the attribute types the client reads rows by", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity4])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(
+               js,
+               ~s/model: {"Hologram.Test.Fixtures.Entity.Module4":{"attributes":{"a":"date",/ <>
+                 ~s/"b":"datetime","c":"enum","created_at":"datetime","d":"float","id":"uuid",/ <>
+                 ~s/"updated_at":"datetime"},"constraints":{},"creatorRoles":[],/ <>
+                 ~s/"defaults":{"c":Type.atom("x")},/ <>
+                 ~s/"enumValues":{"c":["x","y"]},"frameworkAttributes":[],/ <>
+                 ~s/"operations":["create","delete","grant_role","read","read_roles",/ <>
+                 ~s/"revoke_role","update"],"policy":{},/ <>
+                 ~s/"relationships":{},"roles":[],"serverOnly":[]}}/
+             )
+    end
+
+    # The client refuses an undeclared role with the server's own sentence, from this list.
+    test "names a type's declared roles, sorted", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([PolicyEntity])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/"roles":["editor","maintainer","owner","viewer"],/)
+    end
+
+    # The client refuses an operation nothing declares with the server's own sentence, from this
+    # list - the framework's seven and the type's own, whether or not the build checks permissions
+    # (a type declaring nothing renders the seven alone, asserted with the whole entry in "injects
+    # the attribute types the client reads rows by").
+    test "names the operations a type can be asked about, sorted", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([PolicyEntity])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(
+               js,
+               ~s/"operations":["archive","create","delete","grant_role","publish","read",/ <>
+                 ~s/"read_roles","revoke_role","update"],/
+             )
+    end
+
+    # The client writes a creator's grants itself as it creates the row, so the build names which
+    # roles those are - a type declaring none renders an empty list, asserted with the whole entry
+    # in "injects the attribute types the client reads rows by".
+    test "names the roles a creator takes, sorted", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([PolicyEntity])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/"creatorRoles":["maintainer","owner"],/)
+    end
+
+    # The client judges a written value by these, so the name a violation is reported under is the
+    # name the build writes - min_length, not the camelCase of its neighbours.
+    test "injects the declared constraints under the option names a violation names", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity10])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/"bio":{"max_length":10,"optional":true},/)
+      assert String.contains?(js, ~s/"country_code":{"length":2,"optional":true},/)
+      assert String.contains?(js, ~s/"username":{"max_length":8,"min_length":3,"optional":true}/)
+    end
+
+    # A bound is the literal the declaration wrote, and rating declares both spellings of the same
+    # number on one attribute - a float attribute takes `min: 0` beside `max: 5.0`, which the wire
+    # would spell alike and the term encoder keeps apart.
+    test "injects a numeric bound as the encoded term its literal builds", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity10])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(
+               js,
+               ~s/"count":{"max":Type.integer(10n),"min":Type.integer(1n)},/
+             )
+
+      assert String.contains?(
+               js,
+               ~s/"rating":{"max":Type.float(5.0),"min":Type.integer(0n),"optional":true},/
+             )
+    end
+
+    test "injects a temporal bound as the encoded struct its literal builds", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity10])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(
+               js,
+               ~s/"released_on":{"max":Type.map([[Type.atom("__struct__"), Type.atom("Elixir.Date")], / <>
+                 ~s/[Type.atom("calendar"), Type.atom("Elixir.Calendar.ISO")], / <>
+                 ~s/[Type.atom("day"), Type.integer(31n)], [Type.atom("month"), Type.integer(12n)], / <>
+                 ~s/[Type.atom("year"), Type.integer(2030n)]]),"optional":true}/
+             )
+    end
+
+    # A compiled pattern exists only inside the runtime that compiled it, so what travels is what
+    # compiles into one - the source and the options it was written with.
+    test "injects a declared format as its source and its options", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity10])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(
+               js,
+               ~s/"handle":{"format":{"opts":Type.list([]),"source":"^[a-z_]+$"},"min_length":3,"optional":true},/
+             )
+    end
+
+    # Not every compile option is a NAME: ~r/@/s reads back as [:dotall, {:newline, :anycrlf}],
+    # and a tuple has none to write - which is why the options travel as the term they are.
+    test "injects a declared format's options as the term the declaration held", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity10])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(
+               js,
+               ~s/"email":{"format":{"opts":Type.list([Type.atom("dotall"), / <>
+                 ~s/Type.tuple([Type.atom("newline"), Type.atom("anycrlf")])]),"source":"@"},/ <>
+                 ~s/"optional":true},/
+             )
+    end
+
+    # The step travels with the ends: 0..100//5 admits 5 and refuses 7, so a client told only
+    # where the range starts and stops would answer differently from the server.
+    test "injects a declared range as its ends and its step", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity10])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(
+               js,
+               ~s/"percent":{"in":{"first":0,"last":100,"step":5},"optional":true},/
+             )
+
+      assert String.contains?(
+               js,
+               ~s/"priority":{"in":{"first":1,"last":5,"step":1},"optional":true},/
+             )
+    end
+
+    test "injects the uniqueness a declaration asks for", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity19])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(
+               js,
+               ~s/"constraints":{"code":{"optional":true,"unique":true},"slug":{"unique":true}}/
+             )
+    end
+
+    # A default is the literal the declaration wrote, so it travels as the term that literal
+    # becomes in transpiled code rather than as the way the wire spells the same value - a struct
+    # built on the client holds what was declared, and `default: 5` and `default: 5.0` are two
+    # different things to hold.
+    test "injects the declared defaults as encoded terms", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity4])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/"defaults":{"c":Type.atom("x")}/)
+    end
+
+    # A construction naming two of them reports the FIRST, so the order is the refusal's rather
+    # than sorted - a client reporting the other would answer a question the server never got.
+    test "injects the framework-owned attribute names of a job type, in the order they are refused",
+         %{encode_plt: encode_plt, ir_plt: ir_plt, runtime_mfas: runtime_mfas} do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([JobModule1])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/"frameworkAttributes":["actor_id","error","status"]/)
+    end
+
+    test "injects the relationships with their target types, cardinality and optionality", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity3])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(
+               js,
+               ~s/"relationships":{"a":{"optional":false,"toMany":true,"type":"Hologram.Test.Fixtures.Entity.Module2"},/ <>
+                 ~s/"b":{"optional":true,"toMany":false,"type":"Hologram.Test.Fixtures.Entity.Module2"},/ <>
+                 ~s/"c":{"optional":false,"toMany":false,"type":"Hologram.Test.Fixtures.Entity.Module1"}}/
+             )
+    end
+
+    # The NAME travels while the value never does: a client that knows the attribute exists and
+    # is not for it can say so, where one that never heard of it would answer nil.
+    test "injects the names of the attributes a client may not have", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity15])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/"serverOnly":["secret_note","token"]/)
+    end
+
+    # A bundle carries the model of the types its own queries reach and no others: a type a
+    # client can never hold is one it is told nothing about, its attribute names included.
+    test "injects nothing about a type the client can never hold", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity4])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      refute String.contains?(js, "Hologram.Test.Fixtures.Entity.Module15")
+      refute String.contains?(js, "secret_note")
+    end
+
+    # The rules a client checks permissions by, spelled the way the rows it checks them against
+    # are spelled - a predicate value travels as the wire spells it.
+    test "injects the rules a client checks permissions by", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      entity_types = MapSet.new([PolicyEntity, RoleGrant])
+
+      sync_constants = %{
+        @empty_sync_constants
+        | entity_types: entity_types,
+          permission_checking?: true
+      }
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      # A predicate rule, a grant reference on the entity itself and one on its whole type, and a
+      # delegating rule - one of each kind the evaluator has to read.
+      assert String.contains?(
+               js,
+               ~s/"read":[{"predicates":[["public","==",true]],"to":null,"via":null}/
+             )
+
+      assert String.contains?(
+               js,
+               ~s/"to":[["own",["viewer"]],["type","Hologram.Test.Fixtures.Policy.Module2",["admin"]]]/
+             )
+
+      assert String.contains?(js, ~s/"publish":[{"predicates":[],"to":null,"via":"parent"}]/)
+    end
+
+    # A member and its trailing comma, never a member plus whichever key follows it.
+    test "bakes a grant lifecycle rule under its per-role key beside the bare one", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      entity_types = MapSet.new([PolicyEntity, RoleGrant])
+
+      sync_constants = %{
+        @empty_sync_constants
+        | entity_types: entity_types,
+          permission_checking?: true
+      }
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      owner_rule = ~s/{"predicates":[],"to":[["own",["owner"]]],"via":null}/
+
+      assert String.contains?(js, ~s/"grant_role":[#{owner_rule},#{owner_rule}],/)
+      assert String.contains?(js, ~s/"grant_role:editor":[#{owner_rule}],/)
+      assert String.contains?(js, ~s/"grant_role:owner":[#{owner_rule}],/)
+    end
+
+    # The acting user is named rather than carried: the client binds its own id at evaluation,
+    # the way the query kernel binds an actor leaf.
+    test "names the acting user in a rule that references them", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      entity_types = MapSet.new([PolicyEntity, RoleGrant])
+
+      sync_constants = %{
+        @empty_sync_constants
+        | entity_types: entity_types,
+          permission_checking?: true
+      }
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(
+               js,
+               ~s/"archive":[{"predicates":[["author_id","==",{"actor":true}]]/
+             )
+    end
+
+    # A build whose clients check nothing carries no rules for them to read - and an empty policy
+    # grants nothing, which is the answer a client that cannot check should give.
+    test "injects an empty policy when no page checks permissions on the client", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([PolicyEntity])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/"policy":{},"relationships":/)
+    end
+
+    # The grant type reaches the model by two routes - the check that needs it, and any ordinary
+    # query that reads grant rows - so its presence cannot stand in for the check. A build that
+    # read it that way would hand every client the whole authorization model because one component
+    # listed grants.
+    test "injects an empty policy when a query names the grant type and no page checks", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      entity_types = MapSet.new([PolicyEntity, RoleGrant])
+      sync_constants = %{@empty_sync_constants | entity_types: entity_types}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/"policy":{},"relationships":/)
+      refute String.contains?(js, ~s/"predicates":/)
+    end
+
+    # The grant type has no server-only attributes and its relationships resolve to the app's
+    # designated user entity, so it bakes like any other type once the model names it - by the
+    # check that needs it or by a query that reads grant rows, the entry being the same either
+    # way. What the CHECK gates is the policy, which is a separate case.
+    test "injects the grant type's model entry once the model names it", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([RoleGrant])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/model: {"Hologram.Auth.RoleGrant":{"attributes":{/)
+
+      assert String.contains?(
+               js,
+               ~s/"user":{"optional":false,"toMany":false,"type":"Hologram.Test.Fixtures.Entity.Module14"}/
+             )
+    end
+
+    # An attribute declaring no constraint is left out of the map entirely, and a type whose
+    # attributes all declare none carries an empty one - the reader fetches the field without
+    # asking whether it is there.
+    test "injects an empty constraint map for a type declaring no constraint", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity4])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/"constraints":{},/)
+    end
+
+    # A type declaring no default carries an empty map rather than nothing at all - the reader
+    # fetches the field without asking whether it is there.
+    test "injects an empty default map for a type declaring no default", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity15])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/"defaults":{},/)
+    end
+
+    # A type holding no enum attribute carries an empty map rather than nothing at all - the
+    # reader fetches the field without asking whether it is there.
+    test "injects an empty enum-value map for a type with no enum attributes", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity15])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/"enumValues":{},/)
+    end
+
+    # Every type carries the list, empty for anything that is not a job - which is what makes it a
+    # fact about the type rather than a rule the reader has to know jobs by.
+    test "injects an empty framework-attribute list for a type that is not a job", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      sync_constants = %{@empty_sync_constants | entity_types: MapSet.new([Entity15])}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/"frameworkAttributes":[],/)
+    end
+
+    # A capture travels in the bundle and is called there, but an encoded function carries no
+    # argument names - and those names are what each argument binds by.
+    test "injects the argument names each query prop binds by", %{
+      encode_plt: encode_plt,
+      ir_plt: ir_plt,
+      runtime_mfas: runtime_mfas
+    } do
+      prop_params = %{ComponentModule24 => [entities: [:min_b, :max_b]]}
+      sync_constants = %{@empty_sync_constants | prop_params: prop_params}
+
+      js =
+        build_runtime_js(runtime_mfas, ir_plt, encode_plt, MapSet.new(), [], sync_constants,
+          js_dir: @js_dir
+        )
+
+      # The names are written in argument order, not sorted: they are read positionally, so the
+      # order IS the mapping from a prop to the argument it is passed as.
+      assert String.contains?(
+               js,
+               ~s/propParams: {"Hologram.Test.Fixtures.Component.Module24":{"entities":["min_b","max_b"]}}/
+             )
+    end
+
+    test "injects the wire format the bundle speaks" do
+      js =
+        build_runtime_js([], PLT.start(), PLT.start(), MapSet.new(), [], @empty_sync_constants,
+          js_dir: @js_dir
+        )
+
+      assert String.contains?(js, ~s/protocolVersion: #{Frame.protocol_version()}};/)
     end
   end
 
@@ -2003,7 +3324,16 @@ defmodule Hologram.CompilerTest do
       ir_plt: ir_plt,
       runtime_mfas: runtime_mfas
     } do
-      js = build_runtime_js(runtime_mfas, ir_plt, PLT.start(), MapSet.new(), [], js_dir: @js_dir)
+      js =
+        build_runtime_js(
+          runtime_mfas,
+          ir_plt,
+          PLT.start(),
+          MapSet.new(),
+          [],
+          @empty_sync_constants,
+          js_dir: @js_dir
+        )
 
       assert String.contains?(js, "globalThis.Hologram.config = #{client_config()};")
     end
@@ -2180,7 +3510,7 @@ defmodule Hologram.CompilerTest do
     end
   end
 
-  test "create_runtime_entry_file/6", %{ir_plt: ir_plt, runtime_mfas: runtime_mfas} do
+  test "create_runtime_entry_file/7", %{ir_plt: ir_plt, runtime_mfas: runtime_mfas} do
     opts = [
       js_dir: @js_dir,
       tmp_dir: Path.join([@tmp_dir, "tests", "compiler", "create_runtime_entry_file_6"])
@@ -2189,7 +3519,15 @@ defmodule Hologram.CompilerTest do
     clean_dir(opts[:tmp_dir])
 
     entry_file_path =
-      create_runtime_entry_file(runtime_mfas, ir_plt, PLT.start(), MapSet.new(), [], opts)
+      create_runtime_entry_file(
+        runtime_mfas,
+        ir_plt,
+        PLT.start(),
+        MapSet.new(),
+        [],
+        @empty_sync_constants,
+        opts
+      )
 
     assert entry_file_path == Path.join(opts[:tmp_dir], "runtime.entry.js")
 
@@ -4461,6 +5799,120 @@ defmodule Hologram.CompilerTest do
     refute String.contains?(js, "Hologram.Test.Fixtures.Compiler.CallGraph.Module12")
   end
 
+  describe "validate_operations!/3" do
+    # Entity13 declares :publish, :triage and :unlink with roles :editor and :owner; PolicyEntity
+    # declares :archive and :publish with :editor, :maintainer, :owner and :viewer - so the build's
+    # vocabulary is the framework's seven plus four, and its roles four.
+    @declaring_model [Entity13, PolicyEntity]
+
+    defp single_ask_plt(operation) do
+      asker_plt("""
+      defmodule Hologram.Test.Fixtures.Compiler.OperationAsker do
+        def f(user, entity), do: Hologram.Auth.can?(user, #{operation}, entity)
+      end
+      """)
+    end
+
+    test "doesn't raise for a framework operation on a model declaring nothing" do
+      graph = asker_graph([{:f, 2, {Hologram.Auth, :can?, 3}}])
+
+      assert validate_operations!([Entity1], graph, single_ask_plt(":read")) == :ok
+    end
+
+    # An app with no entity type at all - the umbrella test app's shape - still has the
+    # framework's own asks in its call graph, Diff.deltas/4 asking :read among them.
+    test "doesn't raise for a framework operation when the build has no entity type" do
+      graph = asker_graph([{:f, 2, {Hologram.Auth, :can?, 3}}])
+
+      assert validate_operations!([], graph, single_ask_plt(":read")) == :ok
+    end
+
+    test "doesn't raise for an operation some entity type declares" do
+      graph = asker_graph([{:f, 2, {Hologram.Auth, :can?, 3}}])
+
+      assert validate_operations!(@declaring_model, graph, single_ask_plt(":triage")) == :ok
+    end
+
+    test "doesn't raise for a role tuple naming a role some entity type declares" do
+      graph = asker_graph([{:f, 2, {Hologram.Auth, :can?, 3}}])
+
+      assert validate_operations!(
+               @declaring_model,
+               graph,
+               single_ask_plt("{:grant_role, :viewer}")
+             ) ==
+               :ok
+    end
+
+    test "doesn't raise for a computed operation" do
+      plt =
+        asker_plt(~S"""
+        defmodule Hologram.Test.Fixtures.Compiler.OperationAsker do
+          def f(user, operation, entity), do: Hologram.Auth.can?(user, operation, entity)
+        end
+        """)
+
+      graph = asker_graph([{:f, 3, {Hologram.Auth, :can?, 3}}])
+
+      assert validate_operations!([Entity1], graph, plt) == :ok
+    end
+
+    test "raises on an operation no entity type declares" do
+      graph = asker_graph([{:f, 2, {Hologram.Auth, :can?, 3}}])
+
+      expected_msg =
+        "unknown operation :publsh in Hologram.Test.Fixtures.Compiler.OperationAsker.f/2 (line 2) - no entity type declares an allow line for it; the operations this build declares are :archive, :publish, :triage and :unlink, beside the framework's own"
+
+      assert_raise Hologram.CompileError, expected_msg, fn ->
+        validate_operations!(@declaring_model, graph, single_ask_plt(":publsh"))
+      end
+    end
+
+    test "raises on an operation when the model declares none beside the framework's" do
+      graph = asker_graph([{:f, 2, {Hologram.Auth, :can?, 3}}])
+
+      expected_msg =
+        "unknown operation :publsh in Hologram.Test.Fixtures.Compiler.OperationAsker.f/2 (line 2) - no entity type declares an allow line for it; this build declares no operation beside the framework's own"
+
+      assert_raise Hologram.CompileError, expected_msg, fn ->
+        validate_operations!([Entity1], graph, single_ask_plt(":publsh"))
+      end
+    end
+
+    test "raises on a tuple whose name is not a grant lifecycle operation" do
+      graph = asker_graph([{:f, 2, {Hologram.Auth, :can?, 3}}])
+
+      expected_msg =
+        "unknown operation {:publish, :editor} in Hologram.Test.Fixtures.Compiler.OperationAsker.f/2 (line 2) - the operation tuples are {:grant_role, role} and {:revoke_role, role}"
+
+      assert_raise Hologram.CompileError, expected_msg, fn ->
+        validate_operations!(@declaring_model, graph, single_ask_plt("{:publish, :editor}"))
+      end
+    end
+
+    test "raises on a role tuple naming a role no entity type declares" do
+      graph = asker_graph([{:f, 2, {Hologram.Auth, :can?, 3}}])
+
+      expected_msg =
+        "unknown role :editr in {:grant_role, :editr} in Hologram.Test.Fixtures.Compiler.OperationAsker.f/2 (line 2) - declared roles are: :editor, :maintainer, :owner, :viewer"
+
+      assert_raise Hologram.CompileError, expected_msg, fn ->
+        validate_operations!(@declaring_model, graph, single_ask_plt("{:grant_role, :editr}"))
+      end
+    end
+
+    test "raises on a role tuple when no entity type declares a role" do
+      graph = asker_graph([{:f, 2, {Hologram.Auth, :can?, 3}}])
+
+      expected_msg =
+        "unknown role :editor in {:revoke_role, :editor} in Hologram.Test.Fixtures.Compiler.OperationAsker.f/2 (line 2) - no entity type declares a role"
+
+      assert_raise Hologram.CompileError, expected_msg, fn ->
+        validate_operations!([Entity1], graph, single_ask_plt("{:revoke_role, :editor}"))
+      end
+    end
+  end
+
   describe "validate_prop_usages/2" do
     test "doesn't raise when every required prop is written at the usage" do
       plt = PLT.put(PLT.start(), Module32, IR.for_module(Module32))
@@ -4833,6 +6285,31 @@ defmodule Hologram.CompilerTest do
 
       assert_raise Hologram.CompileError, expected_msg, fn ->
         validate_page_modules([InlinePageModuleFixture4], plt)
+      end
+    end
+  end
+
+  # The validation rules live in QueryExtractor's own suite - what is asserted here is the wiring:
+  # the components swept are the ones the given pages reach through the call graph.
+  describe "validate_slot_bindings!/2" do
+    test "passes when every reachable component binds declared slots", %{call_graph: call_graph} do
+      assert validate_slot_bindings!(Reflection.list_pages(), call_graph) == :ok
+    end
+
+    test "raises when a reachable component binds an undeclared slot", %{call_graph: call_graph} do
+      patched_call_graph =
+        call_graph
+        |> CallGraph.clone()
+        |> CallGraph.add_edge(
+          {PageModule7, :template, 0},
+          {ComponentModule11, :template, 0}
+        )
+
+      expected_msg =
+        "test/elixir/support/fixtures/component/module_11.ex: from_query for prop :entities in Hologram.Test.Fixtures.Component.Module11 binds argument :min_b - no like-named prop is declared"
+
+      assert_error Hologram.CompileError, expected_msg, fn ->
+        validate_slot_bindings!([PageModule7], patched_call_graph)
       end
     end
   end

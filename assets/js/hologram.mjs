@@ -2,12 +2,15 @@
 
 import App from "./app.mjs";
 import AssetPathRegistry from "./asset_path_registry.mjs";
+import Batches from "./batches.mjs";
 import Bitstring from "./bitstring.mjs";
 import Client from "./client.mjs";
 import ComponentRegistry from "./component_registry.mjs";
 import Config from "./config.mjs";
 import Debouncer from "./debouncer.mjs";
+import Deltas from "./deltas.mjs";
 import Deserializer from "./deserializer.mjs";
+import Durability from "./durability.mjs";
 import ERTS from "./erts.mjs";
 import EventListenerRegistry from "./event_listener_registry.mjs";
 import EventListeners from "./event_listeners.mjs";
@@ -19,12 +22,15 @@ import InitActionQueue from "./init_action_queue.mjs";
 import Interpreter from "./interpreter.mjs";
 import JsInterop from "./js_interop.mjs";
 import LiveReload from "./live_reload.mjs";
+import LocalDatabase from "./local_database.mjs";
 import MemoryStorage from "./memory_storage.mjs";
-import Operation from "./operation.mjs";
+import Dispatch from "./dispatch.mjs";
 import PerformanceTimer from "./performance_timer.mjs";
 import Renderer from "./renderer.mjs";
+import Replica from "./replica.mjs";
 import Serializer from "./serializer.mjs";
 import Sse from "./sse.mjs";
+import Tabs from "./tabs.mjs";
 import Throttler from "./throttler.mjs";
 import Type from "./type.mjs";
 import UncaughtErrorOverlay from "./uncaught_error_overlay.mjs";
@@ -53,7 +59,12 @@ import ManuallyPortedElixirCldrValidityU from "./elixir/cldr/validity/u.mjs";
 import ManuallyPortedElixirCode from "./elixir/code.mjs";
 import ManuallyPortedElixirException from "./elixir/exception.mjs";
 import ManuallyPortedElixirFunctionClauseError from "./elixir/function_clause_error.mjs";
+import ManuallyPortedElixirHologramAuth from "./elixir/hologram/auth.mjs";
+import ManuallyPortedElixirHologramDB from "./elixir/hologram/db.mjs";
+import ManuallyPortedElixirHologramEntity from "./elixir/hologram/entity.mjs";
 import ManuallyPortedElixirHologramJS from "./elixir/hologram/js.mjs";
+import ManuallyPortedElixirHologramJob from "./elixir/hologram/job.mjs";
+import ManuallyPortedElixirHologramQuery from "./elixir/hologram/query.mjs";
 import ManuallyPortedElixirHologramRouterHelpers from "./elixir/hologram/router/helpers.mjs";
 import ManuallyPortedElixirIO from "./elixir/io.mjs";
 import ManuallyPortedElixirKernel from "./elixir/kernel.mjs";
@@ -186,16 +197,43 @@ export default class Hologram {
       vars: {},
     });
 
-    const resultComponentStruct = Interpreter.callNamedFunction(
-      componentModule,
-      Type.atom("action"),
-      Type.list(args),
-      context,
-    );
+    // An action's writes are one batch: opened here, sealed when it returns, discarded when it
+    // raises. That is what makes "the writes of one action" need no bookkeeping from the app - a
+    // DB verb writes to whichever batch is open, and there is one open only while an action runs.
+    Batches.open(target);
+
+    let resultComponentStruct;
+
+    try {
+      resultComponentStruct = Interpreter.callNamedFunction(
+        componentModule,
+        Type.atom("action"),
+        Type.list(args),
+        context,
+      );
+    } catch (error) {
+      // Nothing half-done: an action that raises leaves no rows behind, and dropping the batch is
+      // the whole of putting them back. The error goes on to handleUncaughtError as it always did.
+      Batches.discard();
+
+      throw error;
+    }
 
     if (resultComponentStruct instanceof Promise) {
-      resultComponentStruct.then((resolved) =>
-        Hologram.#processActionResult(resolved, name, target, startTime, epoch),
+      resultComponentStruct.then(
+        (resolved) =>
+          Hologram.#processActionResult(
+            resolved,
+            name,
+            target,
+            startTime,
+            epoch,
+          ),
+        (error) => {
+          Batches.discard();
+
+          throw error;
+        },
       );
     } else {
       Hologram.#processActionResult(
@@ -318,7 +356,7 @@ export default class Hologram {
   static handleUiEvent(
     event,
     eventType,
-    operationSpecDom,
+    dispatchSpecDom,
     defaultTarget,
     allowDefault = false,
     stopPropagation = false,
@@ -326,7 +364,7 @@ export default class Hologram {
   ) {
     // The guard runs before preventDefault and stopPropagation, so a disabled binding leaves
     // native browser behavior fully untouched.
-    if (Operation.isDisabled(operationSpecDom)) {
+    if (Dispatch.isDisabled(dispatchSpecDom)) {
       return null;
     }
 
@@ -353,7 +391,7 @@ export default class Hologram {
       event.stopPropagation?.();
     }
 
-    const eventParam = eventImpl.buildOperationParam(event);
+    const eventParam = eventImpl.buildEventParam(event);
     const eventTarget = event.target;
 
     // The dispatch below can run later than the event that caused it - a debounce or a throttle
@@ -362,41 +400,41 @@ export default class Hologram {
     const epoch = $.domEpoch;
 
     return () => {
-      const operation = Operation.fromSpecDom(
-        operationSpecDom,
+      const dispatch = Dispatch.fromSpecDom(
+        dispatchSpecDom,
         defaultTarget,
         eventParam,
       );
 
-      if (Operation.isAction(operation)) {
-        switch (Hologram.#getActionName(operation)) {
+      if (Dispatch.isAction(dispatch)) {
+        switch (Hologram.#getActionName(dispatch)) {
           case "__load_prefetched_page__":
             return Hologram.executeLoadPrefetchedPageAction(
-              operation,
+              dispatch,
               eventTarget,
             );
 
           case "__prefetch_page__":
-            return Hologram.executePrefetchPageAction(operation, eventTarget);
+            return Hologram.executePrefetchPageAction(dispatch, eventTarget);
 
           default: {
             const delay = Erlang_Maps["get/3"](
               Type.atom("delay"),
-              operation,
+              dispatch,
               Type.integer(0),
             );
 
             // Settling directly keeps an undelayed dispatch synchronous on a stable page, which
             // is what lets a raising action reach the "error" event the feature tests read.
             if (delay.value === 0n) {
-              return Hologram.#settleAction(operation, epoch);
+              return Hologram.#settleAction(dispatch, epoch);
             } else {
-              return Hologram.scheduleAction(operation, epoch);
+              return Hologram.scheduleAction(dispatch, epoch);
             }
           }
         }
       } else {
-        Client.sendCommand(operation);
+        Client.sendCommand(dispatch);
       }
     };
   }
@@ -450,7 +488,7 @@ export default class Hologram {
     }
 
     await $.#savePageSnapshot();
-    $.#historyId = Utils.randomUUID();
+    $.#historyId = Utils.uuidv7();
 
     window.requestAnimationFrame(() => {
       Hologram.#showNewPage(payload);
@@ -458,6 +496,12 @@ export default class Hologram {
 
       history.pushState($.#historyId, null, pagePath);
     });
+  }
+
+  // The page this client is on, for whoever needs to name it to the server. Null before the page
+  // has mounted.
+  static currentPageModule() {
+    return Hologram.#pageModule;
   }
 
   // Made public to make tests easier
@@ -602,6 +646,12 @@ export default class Hologram {
         throw error;
       }
 
+      // After the mount, so that the rows the page itself carried are already in - they are the
+      // freshest thing this client has, and a stored row fills only what the page said nothing
+      // about. Before the connect, so the stream is greeted with the place this browser had
+      // already been brought up to rather than with nothing.
+      Hologram.#restoreDurable();
+
       // SSE must open AFTER `#mountPage()` because the handshake payload
       // includes the receipts merged from `pageMountData.subReceiptAdds` -
       // connecting earlier would send an empty receipts list.
@@ -689,6 +739,300 @@ export default class Hologram {
     );
 
     Interpreter.defineManuallyPortedFunction(
+      "Hologram.Auth",
+      "can?/3",
+      "public",
+      ManuallyPortedElixirHologramAuth["can?/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Auth",
+      "grant_role/2",
+      "public",
+      ManuallyPortedElixirHologramAuth["grant_role/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Auth",
+      "grant_role/3",
+      "public",
+      ManuallyPortedElixirHologramAuth["grant_role/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Auth",
+      "revoke_role/2",
+      "public",
+      ManuallyPortedElixirHologramAuth["revoke_role/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Auth",
+      "revoke_role/3",
+      "public",
+      ManuallyPortedElixirHologramAuth["revoke_role/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "create!/1",
+      "public",
+      ManuallyPortedElixirHologramDB["create!/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "create/1",
+      "public",
+      ManuallyPortedElixirHologramDB["create/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "delete!/1",
+      "public",
+      ManuallyPortedElixirHologramDB["delete!/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "delete!/2",
+      "public",
+      ManuallyPortedElixirHologramDB["delete!/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "delete/1",
+      "public",
+      ManuallyPortedElixirHologramDB["delete/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "delete/2",
+      "public",
+      ManuallyPortedElixirHologramDB["delete/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "read/1",
+      "public",
+      ManuallyPortedElixirHologramDB["read/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "read/2",
+      "public",
+      ManuallyPortedElixirHologramDB["read/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "rollback/1",
+      "public",
+      ManuallyPortedElixirHologramDB["rollback/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "transaction/1",
+      "public",
+      ManuallyPortedElixirHologramDB["transaction/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "transaction/2",
+      "public",
+      ManuallyPortedElixirHologramDB["transaction/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "update!/1",
+      "public",
+      ManuallyPortedElixirHologramDB["update!/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "update!/3",
+      "public",
+      ManuallyPortedElixirHologramDB["update!/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "update/1",
+      "public",
+      ManuallyPortedElixirHologramDB["update/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.DB",
+      "update/3",
+      "public",
+      ManuallyPortedElixirHologramDB["update/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Entity",
+      "generate_id/0",
+      "public",
+      ManuallyPortedElixirHologramEntity["generate_id/0"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Entity",
+      "new/1",
+      "public",
+      ManuallyPortedElixirHologramEntity["new/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Entity",
+      "new/2",
+      "public",
+      ManuallyPortedElixirHologramEntity["new/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Entity",
+      "validate/1",
+      "public",
+      ManuallyPortedElixirHologramEntity["validate/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Entity",
+      "validate/2",
+      "public",
+      ManuallyPortedElixirHologramEntity["validate/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "add_relationship/3",
+      "public",
+      ManuallyPortedElixirHologramQuery["add_relationship/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "authorize/2",
+      "public",
+      ManuallyPortedElixirHologramQuery["authorize/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "count/1",
+      "public",
+      ManuallyPortedElixirHologramQuery["count/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "decrement/3",
+      "public",
+      ManuallyPortedElixirHologramQuery["decrement/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "delete_relationship/3",
+      "public",
+      ManuallyPortedElixirHologramQuery["delete_relationship/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "filter/2",
+      "public",
+      ManuallyPortedElixirHologramQuery["filter/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "include/2",
+      "public",
+      ManuallyPortedElixirHologramQuery["include/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "include/3",
+      "public",
+      ManuallyPortedElixirHologramQuery["include/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "increment/3",
+      "public",
+      ManuallyPortedElixirHologramQuery["increment/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "limit/2",
+      "public",
+      ManuallyPortedElixirHologramQuery["limit/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "normalize/1",
+      "public",
+      ManuallyPortedElixirHologramQuery["normalize/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "offset/2",
+      "public",
+      ManuallyPortedElixirHologramQuery["offset/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "one/1",
+      "public",
+      ManuallyPortedElixirHologramQuery["one/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "order_by/2",
+      "public",
+      ManuallyPortedElixirHologramQuery["order_by/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "put_attribute/2",
+      "public",
+      ManuallyPortedElixirHologramQuery["put_attribute/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "put_attribute/3",
+      "public",
+      ManuallyPortedElixirHologramQuery["put_attribute/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Query",
+      "trust/1",
+      "public",
+      ManuallyPortedElixirHologramQuery["trust/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
       "Hologram.JS",
       "call/4",
       "public",
@@ -756,6 +1100,55 @@ export default class Hologram {
       "typeof/2",
       "public",
       ManuallyPortedElixirHologramJS["typeof/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Job",
+      "create!/1",
+      "public",
+      ManuallyPortedElixirHologramJob["create!/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Job",
+      "create!/2",
+      "public",
+      ManuallyPortedElixirHologramJob["create!/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Job",
+      "create!/3",
+      "public",
+      ManuallyPortedElixirHologramJob["create!/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Job",
+      "create/1",
+      "public",
+      ManuallyPortedElixirHologramJob["create/1"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Job",
+      "create/2",
+      "public",
+      ManuallyPortedElixirHologramJob["create/2"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Job",
+      "create/3",
+      "public",
+      ManuallyPortedElixirHologramJob["create/3"],
+    );
+
+    Interpreter.defineManuallyPortedFunction(
+      "Hologram.Job",
+      "framework_attribute_names/0",
+      "public",
+      ManuallyPortedElixirHologramJob["framework_attribute_names/0"],
     );
 
     Interpreter.defineManuallyPortedFunction(
@@ -958,7 +1351,7 @@ export default class Hologram {
 
   static #ensureDomNodeHasHologramId(eventNode) {
     if (typeof eventNode.__hologramId__ === "undefined") {
-      eventNode.__hologramId__ = Utils.randomUUID();
+      eventNode.__hologramId__ = Utils.uuidv7();
     }
   }
 
@@ -1063,10 +1456,10 @@ export default class Hologram {
   }
 
   // Deps: [:maps.get/2]
-  static #getToParam(operation) {
+  static #getToParam(dispatch) {
     return Erlang_Maps["get/2"](
       Type.atom("to"),
-      Erlang_Maps["get/2"](Type.atom("params"), operation),
+      Erlang_Maps["get/2"](Type.atom("params"), dispatch),
     );
   }
 
@@ -1205,11 +1598,47 @@ export default class Hologram {
         );
       }
     } else {
-      $.#historyId = Utils.randomUUID();
+      $.#historyId = Utils.uuidv7();
       history.replaceState($.#historyId, null, window.location.pathname);
     }
 
     await $.#restoreEts();
+
+    // The pair this page was minted, handed over before the store is read: what is found there
+    // wins, and this is what the client falls back to when the server refuses it.
+    Replica.offer({
+      id: globalThis.Hologram.replicaId,
+      token: globalThis.Hologram.replicaToken,
+    });
+
+    // Awaited HERE, before the mount, which is what lets the restore that follows the mount be
+    // synchronous - everything from the mount onwards runs in one continuation, so the first local
+    // write cannot land ahead of what a previous page load left.
+    await Durability.open();
+
+    // The group this browser's tabs share, joined before the mount and before the stream opens -
+    // which is what lets the tab that leads greet the server with sync on its FIRST connect, and
+    // stops a follower opening a sync session it would have to drop a moment later.
+    //
+    // Named for the database and for the user this page mounts under. Per database because tabs on
+    // different models cannot share a store, and per user because the leader can only send what
+    // the session it holds is allowed to send - a tab still mounted under somebody else must not
+    // be sending, or reading, for this one.
+    //
+    // Nothing to join where there is no store: the tabs of such a browser share nothing, so each
+    // is a replica of its own, exactly as every tab was before any of this.
+    const database = Durability.databaseName();
+
+    if (database !== null && Durability.mode === "indexeddb") {
+      // Read HERE rather than at the mount, because the group cannot be named without it. The
+      // mount finds it already read - it has always taken what is held over what the page defines.
+      $.#mountData ??= globalThis.Hologram.pageMountData(Hologram.#deps);
+
+      await Tabs.join(
+        `${database}.${$.#mountData.actorUserId ?? "anonymous"}`,
+        {},
+      );
+    }
 
     App.maybeLoadInstanceId();
     Client.connect(false);
@@ -1225,6 +1654,32 @@ export default class Hologram {
 
     $.#pendingJsInteropActions = globalThis.Hologram._pendingJsInteropActions;
     globalThis.Hologram.dispatchAction = $.dispatchAction;
+
+    // A read-only window onto the write queue, beside the interop hatch above. Nothing in the
+    // framework reads it - it is for a devtools panel, a browser-driven test, and whatever step
+    // 10's queue surface is built on. Reads only: opening and closing batches is the action
+    // lifecycle's, and nothing outside it should reach in.
+    globalThis.Hologram.writes = {
+      oldestPendingSeq: Batches.oldestPendingSeq,
+      pendingCount: Batches.pendingCount,
+      rejected: Batches.rejectedSummaries,
+    };
+
+    // The same kind of window onto what this browser keeps between page loads: whether it is
+    // keeping anything at all, the place it would greet a stream with, the identity it is
+    // presenting, and how many writes are still on their way down. Reads only, and nothing in the
+    // framework reads them.
+    globalThis.Hologram.durability = {
+      cursor: () => Sse.syncCursor,
+      group: () => Tabs.name,
+      leader: () => Tabs.leader,
+      mode: () => Durability.mode,
+      pendingWrites: () => Durability.inFlight,
+      persisted: () => Durability.persisted,
+      replicaId: () => Replica.id,
+      storedBatches: () => Durability.storedBatches,
+    };
+
     delete globalThis.Hologram._pendingJsInteropActions;
 
     Hologram.#isInitiated = true;
@@ -1311,6 +1766,23 @@ export default class Hologram {
     LiveReload.recordPageBundle(mountData.pageModule, mountData.pageDigest);
 
     ComponentRegistry.populate(mountData.componentRegistry);
+
+    // Before the first render, so that a prop reading a query answers from the database rather
+    // than from nothing - the rows the server read to render this page are the rows those
+    // queries need, and they go in through the same ingest the stream uses. Every page visit
+    // carries again, which is how navigation needs no server for what it already has.
+    //
+    // A bundle built before any of this existed carries neither field, and a build with no data
+    // model carries no rows - both leave the database as it was.
+    if (mountData.syncRows) {
+      LocalDatabase.actorUserId = mountData.actorUserId;
+      Deltas.apply(mountData.syncRows, {insertOnly: true});
+
+      // A count has no rows behind it, so the rows cannot carry one - the numbers this render
+      // answered with travel beside them, and each page visit replaces them the way it replaces
+      // what its own props read.
+      LocalDatabase.syncCounts = mountData.syncCounts ?? {};
+    }
 
     return mountData;
   }
@@ -1435,6 +1907,12 @@ export default class Hologram {
     }
   }
 
+  // A value the server sent as JSON, or undefined when it sent none - a build with no data model
+  // carries no rows, and neither does a payload from a server that predates them.
+  static #parseMountJson(json) {
+    return json === undefined ? undefined : JSON.parse(json);
+  }
+
   // Mirrors Hologram.Router.Helpers.page_bundle_path/2
   static #pageBundlePath(pageModule, pageDigest) {
     return `/hologram/page-${Interpreter.moduleExName(pageModule)}-${pageDigest}.js`;
@@ -1528,7 +2006,11 @@ export default class Hologram {
 
     // Readable before the patch, rather than as a side effect of a script the patch inserts and
     // the browser then runs. The page module is already decoded above, so it is reused.
+    // The data-layer values travel as JSON rather than as boxed terms, the way the inline script
+    // inlines them: the local database reads them, not transpiled code. A server that predates
+    // them sends none, which the mount reads as nothing to ingest.
     $.#mountData = {
+      actorUserId: $.#parseMountJson(payload.actorUserId),
       componentRegistry: Interpreter.evaluateJavaScriptExpression(
         payload.componentRegistry,
       ),
@@ -1542,6 +2024,8 @@ export default class Hologram {
       subReceiptDrops: Interpreter.evaluateJavaScriptExpression(
         payload.subReceiptDrops,
       ),
+      syncCounts: $.#parseMountJson(payload.syncCounts),
+      syncRows: $.#parseMountJson(payload.syncRows),
     };
 
     // See: docs/navigation_payload_wire_format.md
@@ -1568,6 +2052,11 @@ export default class Hologram {
     startTime,
     epoch,
   ) {
+    // Sealed BEFORE the render below, so the one frame that follows shows the action's state
+    // change and its data change together - which is the whole point of the batch boundary being
+    // the action.
+    Batches.close();
+
     let nextAction = Erlang_Maps["get/2"](
       Type.atom("next_action"),
       resultComponentStruct,
@@ -1620,6 +2109,9 @@ export default class Hologram {
 
     Hologram.render();
 
+    // After the render rather than before it: what the user sees does not wait on the network.
+    Batches.flush();
+
     Hologram.#scheduleQueuedInitActions();
 
     if (!Type.isNil(nextAction)) {
@@ -1668,6 +2160,36 @@ export default class Hologram {
         Hologram.#settleAction(action, epoch);
       }, 0);
     }
+  }
+
+  // Takes up what a previous page load left - the place to resume the stream from, the number to
+  // count batches on from, and the batches it never managed to send - and answers nothing on every
+  // visit after the first, since the runtime's page-script listener fires again on each
+  // client-side navigation and this runs once per page visit.
+  static #restoreDurable() {
+    const resumed = Durability.restore(Tabs.leader);
+
+    if (resumed === null) {
+      return;
+    }
+
+    Sse.syncCursor = resumed.cursor;
+    Batches.resumeFrom(resumed.seq);
+    Batches.adopt(resumed.batches);
+
+    // Everything this tab starts with is in place, so what the group has said since may land on it
+    // - and whatever arrived while it was starting up is applied now, in the order it arrived.
+    Tabs.ready();
+
+    // And what the store could not tell it is asked for: the completeness scopes, which nothing
+    // writes down, and the place and the identity as they stand in the tab that has them.
+    Tabs.post({kind: "joined"});
+
+    // The third thing that wakes the sender, beside an action finishing and the stream opening.
+    // It is needed rather than tidy: the stream is connected before the mount, so it can have
+    // opened - and flushed an empty queue - before these batches were taken up. Without this they
+    // would wait for the user to do something.
+    Batches.flush();
   }
 
   static async #restoreEts() {

@@ -1,0 +1,810 @@
+defmodule Hologram.Mutation.EnvelopeTest do
+  use Hologram.Test.BasicCase, async: true
+
+  import Hologram.Mutation.Envelope
+
+  alias Hologram.Auth.RoleGrant
+  alias Hologram.Mutation.Envelope
+  alias Hologram.Mutation.Write
+  alias Hologram.Test.Fixtures.Entity.Module10
+  alias Hologram.Test.Fixtures.Entity.Module15
+  alias Hologram.Test.Fixtures.Entity.Module16
+  alias Hologram.Test.Fixtures.Entity.Module2
+  alias Hologram.Test.Fixtures.Entity.Module21
+  alias Hologram.Test.Fixtures.Entity.Module3
+  alias Hologram.Test.Fixtures.Entity.Module4
+  alias Hologram.Test.Fixtures.Job.Module1, as: JobModule1
+  alias Hologram.Test.Fixtures.Job.Module3, as: JobModule3
+  alias Hologram.Test.Fixtures.Policy.Module2, as: PolicyModule2
+
+  @granter_id "0192b1e9-7a2b-7c3d-8e4f-5a6b7c8d9e11"
+  @id "0192b1e9-7a2b-7c3d-8e4f-5a6b7c8d9e0f"
+  @target_id "0192b1e9-7a2b-7c3d-8e4f-5a6b7c8d9e10"
+  @user_id "0192b1e9-7a2b-7c3d-8e4f-5a6b7c8d9e12"
+
+  defp edge(op, entity_type, relationship, opts \\ []) do
+    %{
+      "op" => op,
+      "type" => inspect(entity_type),
+      "id" => Keyword.get(opts, :id, @id),
+      "relationship" => relationship,
+      "target_id" => Keyword.get(opts, :target_id, @target_id),
+      "claim" => Keyword.get(opts, :claim)
+    }
+  end
+
+  defp create(entity_type, data, opts \\ []) do
+    %{
+      "op" => "create",
+      "type" => inspect(entity_type),
+      "id" => Keyword.get(opts, :id, @id),
+      "data" => data,
+      "claim" => Keyword.get(opts, :claim),
+      "stamp" => Keyword.get(opts, :stamp, 5)
+    }
+  end
+
+  defp delete(entity_type, opts \\ []) do
+    %{
+      "op" => "delete",
+      "type" => inspect(entity_type),
+      "id" => Keyword.get(opts, :id, @id),
+      "data" => Keyword.get(opts, :data),
+      "based_on" => Keyword.get(opts, :based_on),
+      "claim" => Keyword.get(opts, :claim),
+      "stamp" => Keyword.get(opts, :stamp, 5)
+    }
+  end
+
+  defp grant_data(overrides \\ %{}) do
+    Map.merge(
+      %{
+        "granted_by_id" => @granter_id,
+        "entity_id" => @target_id,
+        "entity_type" => "Hologram.Test.Fixtures.Policy.Module2",
+        "role" => "member",
+        "user_id" => @user_id
+      },
+      overrides
+    )
+  end
+
+  defp raw(writes) do
+    %{
+      "instance_id" => "i1",
+      "replica_id" => "c1",
+      "model_hash" => "h",
+      "seq" => 1,
+      "writes" => writes
+    }
+  end
+
+  defp update(entity_type, data, opts \\ []) do
+    base = %{
+      "op" => "update",
+      "type" => inspect(entity_type),
+      "id" => Keyword.get(opts, :id, @id),
+      "based_on" => Keyword.get(opts, :based_on),
+      "claim" => Keyword.get(opts, :claim),
+      "stamp" => Keyword.get(opts, :stamp, 5)
+    }
+
+    with_data = if data, do: Map.put(base, "data", data), else: base
+
+    case Keyword.get(opts, :deltas) do
+      nil -> with_data
+      deltas -> Map.put(with_data, "deltas", deltas)
+    end
+  end
+
+  describe "parse/1" do
+    test "parses a header into an envelope" do
+      assert parse(raw([])) ==
+               {:ok,
+                %Envelope{
+                  instance_id: "i1",
+                  model_hash: "h",
+                  replica_id: "c1",
+                  seq: 1,
+                  writes: []
+                }}
+    end
+
+    test "parses a create into a write" do
+      entry = create(Module2, %{"a" => true, "b" => 2, "c" => "x"})
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write == %Write{
+               based_on: %{},
+               claim: nil,
+               data: %{a: true, b: 2, c: "x"},
+               entity_type: Module2,
+               id: @id,
+               op: :create,
+               relationship: nil,
+               stamp: 5,
+               target_id: nil
+             }
+    end
+
+    test "parses an update into a write" do
+      entry = update(Module2, %{"c" => "x"}, based_on: %{"c" => 3})
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write == %Write{
+               based_on: %{c: 3},
+               claim: nil,
+               data: %{c: "x"},
+               entity_type: Module2,
+               id: @id,
+               op: :update,
+               relationship: nil,
+               stamp: 5,
+               target_id: nil
+             }
+    end
+
+    test "parses a delete into a write" do
+      entry = delete(Module2, based_on: %{"a" => 1, "c" => 3})
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write == %Write{
+               based_on: %{a: 1, c: 3},
+               claim: nil,
+               data: %{},
+               entity_type: Module2,
+               id: @id,
+               op: :delete,
+               relationship: nil,
+               stamp: 5,
+               target_id: nil
+             }
+    end
+
+    test "reads a missing based_on as no revisions" do
+      assert {:ok, %Envelope{writes: [write]}} =
+               parse(raw([update(Module2, %{"c" => "x"})]))
+
+      assert write.based_on == %{}
+    end
+
+    test "reads a based_on through the field a reference is written under" do
+      entry = update(Module3, %{"c_id" => @target_id}, based_on: %{"c_id" => 3})
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write.based_on == %{c_id: 3}
+    end
+
+    test "parses an update's deltas into a write" do
+      entry = update(Module10, %{"bio" => "x"}, deltas: %{"count" => 2})
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write.data == %{bio: "x"}
+      assert write.deltas == %{count: 2}
+    end
+
+    test "reads a missing deltas as none" do
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([update(Module2, %{"c" => "x"})]))
+
+      assert write.deltas == %{}
+    end
+
+    test "parses an update carrying deltas alone" do
+      entry = update(Module10, nil, deltas: %{"count" => -1})
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write.data == %{}
+      assert write.deltas == %{count: -1}
+    end
+
+    test "parses an added edge into a write" do
+      entry = edge("add_relationship", Module16, "secrets")
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write == %Write{
+               based_on: %{},
+               claim: nil,
+               data: %{},
+               entity_type: Module16,
+               id: @id,
+               op: :add_relationship,
+               relationship: :secrets,
+               stamp: nil,
+               target_id: @target_id
+             }
+    end
+
+    test "parses a deleted edge into a write" do
+      entry = edge("delete_relationship", Module16, "secrets")
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write.op == :delete_relationship
+      assert write.relationship == :secrets
+      assert write.target_id == @target_id
+    end
+
+    test "parses every write of a batch, in the order they were sent" do
+      entries = [
+        create(Module2, %{"c" => "first"}),
+        create(Module2, %{"c" => "second"}, id: @target_id)
+      ]
+
+      assert {:ok, %Envelope{writes: writes}} = parse(raw(entries))
+
+      assert Enum.map(writes, & &1.data) == [%{c: "first"}, %{c: "second"}]
+    end
+
+    test "decodes a value by the field's declared type" do
+      entry = create(Module4, %{"a" => "2026-07-19", "c" => "y", "d" => 1.5})
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write.data == %{a: ~D[2026-07-19], c: :y, d: 1.5}
+    end
+
+    test "reads a to-one reference through its id field" do
+      entry = create(Module3, %{"c_id" => @target_id})
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write.data == %{c_id: @target_id}
+    end
+
+    test "parses a claim naming an operation" do
+      entry = create(PolicyModule2, %{"public" => true}, claim: ["authorize", "publish"])
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write.claim == {:authorize, :publish}
+    end
+
+    test "parses a claim naming a framework operation on an entity type declaring nothing" do
+      entry = create(Module2, %{"c" => "x"}, claim: ["authorize", "update"])
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write.claim == {:authorize, :update}
+    end
+
+    test "accepts a create of a role grant" do
+      grant_id = RoleGrant.derive_id(@user_id, PolicyModule2, @target_id, :member)
+      entry = create(RoleGrant, grant_data(), id: grant_id)
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write == %Write{
+               based_on: %{},
+               claim: nil,
+               data: %{
+                 granted_by_id: @granter_id,
+                 entity_id: @target_id,
+                 entity_type: PolicyModule2,
+                 role: :member,
+                 user_id: @user_id
+               },
+               entity_type: RoleGrant,
+               id: grant_id,
+               op: :create,
+               relationship: nil,
+               stamp: 5,
+               target_id: nil
+             }
+    end
+
+    # A revocation carries the grant it revokes, as the browser sends it: the identity columns
+    # and nothing else, under the id they derive.
+    test "accepts a delete of a role grant carrying the grant it revokes" do
+      grant_id = RoleGrant.derive_id(@user_id, PolicyModule2, @target_id, :member)
+      data = Map.delete(grant_data(), "granted_by_id")
+      entry = delete(RoleGrant, based_on: %{"role" => 3}, data: data, id: grant_id)
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write == %Write{
+               based_on: %{role: 3},
+               claim: nil,
+               data: %{
+                 entity_id: @target_id,
+                 entity_type: PolicyModule2,
+                 role: :member,
+                 user_id: @user_id
+               },
+               entity_type: RoleGrant,
+               id: grant_id,
+               op: :delete,
+               relationship: nil,
+               stamp: 5,
+               target_id: nil
+             }
+    end
+
+    # The gate is asked about the grant the delete states, so a delete stating none has nothing
+    # to be gated on - an id alone, which anyone can derive, is not a revocation.
+    test "refuses a delete of a role grant carrying no grant" do
+      grant_id = RoleGrant.derive_id(@user_id, PolicyModule2, @target_id, :member)
+      entry = delete(RoleGrant, id: grant_id)
+
+      assert parse(raw([entry])) ==
+               {:error, "write 0: a role grant is revoked by the grant it states"}
+    end
+
+    # What binds the grant the gate is asked about to the row the delete takes: a client cannot
+    # state one grant and delete another.
+    test "refuses a delete of a role grant whose id is not derived from it" do
+      data = Map.delete(grant_data(), "granted_by_id")
+      entry = delete(RoleGrant, data: data, id: @id)
+
+      assert parse(raw([entry])) ==
+               {:error, "write 0: a role grant's id is derived from the grant it names"}
+    end
+
+    test "refuses an instance id that is not a string" do
+      assert parse(%{raw([]) | "instance_id" => 1}) == {:error, "instance_id must be a string"}
+    end
+
+    test "refuses a replica id that is not a string" do
+      assert parse(%{raw([]) | "replica_id" => nil}) == {:error, "replica_id must be a string"}
+    end
+
+    test "refuses a sequence number that is not a non-negative integer" do
+      assert parse(%{raw([]) | "seq" => -1}) == {:error, "seq must be a non-negative integer"}
+      assert parse(%{raw([]) | "seq" => "1"}) == {:error, "seq must be a non-negative integer"}
+    end
+
+    test "refuses a model hash that is not a string" do
+      assert parse(%{raw([]) | "model_hash" => 1}) == {:error, "model_hash must be a string"}
+    end
+
+    test "refuses writes that are not a list" do
+      assert parse(%{raw([]) | "writes" => "nope"}) == {:error, "writes must be a list"}
+    end
+
+    test "refuses a write that is not an object" do
+      assert parse(raw(["nope"])) == {:error, "write 0: a write must be an object"}
+    end
+
+    test "refuses an op this build does not have" do
+      entry = %{create(Module2, %{"c" => "x"}) | "op" => "nope"}
+
+      assert parse(raw([entry])) ==
+               {:error,
+                "write 0: op must be one of create, update, delete, add_relationship, " <>
+                  "delete_relationship"}
+    end
+
+    test "names the write a refusal came from" do
+      entries = [
+        create(Module2, %{"c" => "x"}),
+        %{create(Module2, %{"c" => "x"}) | "op" => "nope"}
+      ]
+
+      assert {:error, "write 1: op must be one of" <> _rest} = parse(raw(entries))
+    end
+
+    test "refuses a type that is not a string" do
+      entry = %{create(Module2, %{"c" => "x"}) | "type" => 1}
+
+      assert parse(raw([entry])) == {:error, "write 0: type must be a string"}
+    end
+
+    test "refuses an entity type this build does not have" do
+      entry = %{create(Module2, %{"c" => "x"}) | "type" => "MyApp.NoSuchTypeInThisBuild"}
+
+      assert parse(raw([entry])) ==
+               {:error,
+                ~s(write 0: type "MyApp.NoSuchTypeInThisBuild" is not an entity type of this build)}
+    end
+
+    test "refuses a type naming something this build has but does not store" do
+      entry = %{create(Module2, %{"c" => "x"}) | "type" => "Hologram.Mutation.Envelope"}
+
+      assert parse(raw([entry])) ==
+               {:error,
+                ~s(write 0: type "Hologram.Mutation.Envelope" is not an entity type of this build)}
+    end
+
+    test "refuses an id that is not an entity id" do
+      entry = create(Module2, %{"c" => "x"}, id: "nope")
+
+      assert parse(raw([entry])) == {:error, "write 0: id must be an entity id"}
+    end
+
+    test "refuses data that is not an object" do
+      entry = %{create(Module2, %{"c" => "x"}) | "data" => ["c", "x"]}
+
+      assert parse(raw([entry])) == {:error, "write 0: data must be an object"}
+    end
+
+    test "refuses a field the entity type does not declare" do
+      entry = create(Module2, %{"nope" => 1})
+
+      assert parse(raw([entry])) ==
+               {:error,
+                ~s[write 0: "nope" is not a field of Hologram.Test.Fixtures.Entity.Module2 a client can write]}
+    end
+
+    test "refuses a server-only attribute as a field" do
+      entry = create(Module15, %{"token" => "t"})
+
+      assert parse(raw([entry])) ==
+               {:error,
+                ~s[write 0: "token" is not a field of Hologram.Test.Fixtures.Entity.Module15 a client can write]}
+    end
+
+    test "parses a job's own attribute into a create" do
+      entry = create(JobModule3, %{"outcome" => "ok"})
+
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([entry]))
+
+      assert write == %Write{
+               based_on: %{},
+               claim: nil,
+               data: %{outcome: :ok},
+               entity_type: JobModule3,
+               id: @id,
+               op: :create,
+               relationship: nil,
+               stamp: 5,
+               target_id: nil
+             }
+    end
+
+    test "refuses a job's status as a field" do
+      entry = create(JobModule1, %{"status" => "done"})
+
+      assert parse(raw([entry])) ==
+               {:error,
+                ~s[write 0: "status" is not a field of Hologram.Test.Fixtures.Job.Module1 a client can write]}
+    end
+
+    test "refuses a job's actor as a field" do
+      entry = create(JobModule1, %{"actor_id" => @id})
+
+      assert parse(raw([entry])) ==
+               {:error,
+                ~s[write 0: "actor_id" is not a field of Hologram.Test.Fixtures.Job.Module1 a client can write]}
+    end
+
+    test "refuses a job's error as a field" do
+      entry = create(JobModule1, %{"error" => "boom"})
+
+      assert parse(raw([entry])) ==
+               {:error,
+                ~s[write 0: "error" is not a field of Hologram.Test.Fixtures.Job.Module1 a client can write]}
+    end
+
+    test "refuses a value that is not the field's spelling" do
+      assert parse(raw([create(Module2, %{"b" => "2"})])) ==
+               {:error, ~s(write 0: "b" is not a valid integer)}
+
+      assert parse(raw([create(Module4, %{"c" => "no_such_enum_label_in_this_build"})])) ==
+               {:error, ~s(write 0: "c" is not a valid enum value)}
+
+      assert parse(raw([create(Module3, %{"c_id" => 1})])) ==
+               {:error, ~s(write 0: "c_id" is not a valid entity id)}
+    end
+
+    # Membership in the declared values is Entity.validate's to judge, not this layer's: a label
+    # naming an atom the build has decodes here and is refused at the write as a value violation,
+    # which is what puts it on a form field rather than in a bad request.
+    test "reads an enum label outside the declared values as the value it names" do
+      assert {:ok, %Envelope{writes: [write]}} = parse(raw([create(Module4, %{"c" => "z"})]))
+
+      assert write.data == %{c: :z}
+    end
+
+    test "refuses an update changing nothing" do
+      assert parse(raw([update(Module2, %{})])) ==
+               {:error, "write 0: an update must change at least one field"}
+
+      assert parse(raw([update(Module2, %{}, deltas: %{})])) ==
+               {:error, "write 0: an update must change at least one field"}
+
+      assert parse(raw([update(Module2, nil)])) ==
+               {:error, "write 0: an update must change at least one field"}
+    end
+
+    test "refuses deltas that are not an object" do
+      assert parse(raw([update(Module10, nil, deltas: [1])])) ==
+               {:error, "write 0: deltas must be an object"}
+    end
+
+    # Module2's :c is required and a string - the one shape that separates "not an integer" from
+    # "optional", since every non-integer attribute Module10 declares is optional as well.
+    test "refuses a delta naming a field that is not an integer attribute" do
+      expected_msg =
+        ~s[write 0: "c" is not a counter of Hologram.Test.Fixtures.Entity.Module2 a client can move - a counter is a required integer attribute]
+
+      assert parse(raw([update(Module2, nil, deltas: %{"c" => 1})])) == {:error, expected_msg}
+    end
+
+    test "refuses a delta naming an optional integer attribute" do
+      expected_msg =
+        ~s[write 0: "priority" is not a counter of Hologram.Test.Fixtures.Entity.Module10 a client can move - a counter is a required integer attribute]
+
+      assert parse(raw([update(Module10, nil, deltas: %{"priority" => 1})])) ==
+               {:error, expected_msg}
+    end
+
+    # The counters a client may move are the settable fields narrowed to required integers, and the
+    # settable fields already withhold the server-only names - so this holds by composition, and
+    # this test is what keeps it holding when either half is rewritten.
+    test "refuses a delta naming a server-only counter" do
+      expected_msg =
+        ~s[write 0: "balance" is not a counter of Hologram.Test.Fixtures.Entity.Module21 a client can move - a counter is a required integer attribute]
+
+      assert parse(raw([update(Module21, nil, deltas: %{"balance" => 1})])) ==
+               {:error, expected_msg}
+    end
+
+    test "refuses a delta that is not a non-zero integer" do
+      assert parse(raw([update(Module10, nil, deltas: %{"count" => 0})])) ==
+               {:error, ~s[write 0: deltas."count" must be a non-zero integer]}
+
+      assert parse(raw([update(Module10, nil, deltas: %{"count" => "1"})])) ==
+               {:error, ~s[write 0: deltas."count" must be a non-zero integer]}
+    end
+
+    test "refuses a delta out of range for an integer attribute" do
+      expected_msg = ~s[write 0: deltas."count" is out of range for an integer attribute]
+
+      assert parse(raw([update(Module10, nil, deltas: %{"count" => 9_223_372_036_854_775_808})])) ==
+               {:error, expected_msg}
+
+      assert parse(raw([update(Module10, nil, deltas: %{"count" => -9_223_372_036_854_775_809})])) ==
+               {:error, expected_msg}
+    end
+
+    test "admits a delta at the edge of an integer attribute's range" do
+      assert {:ok, %Envelope{writes: [write]}} =
+               parse(
+                 raw([update(Module10, nil, deltas: %{"count" => -9_223_372_036_854_775_808})])
+               )
+
+      assert write.deltas == %{count: -9_223_372_036_854_775_808}
+    end
+
+    test "refuses a field both set and moved by one write" do
+      entry = update(Module10, %{"count" => 7}, deltas: %{"count" => 1})
+
+      assert parse(raw([entry])) ==
+               {:error, ~s[write 0: "count" is both set and moved by one write]}
+    end
+
+    test "refuses deltas on a create" do
+      entry =
+        Module10
+        |> create(%{"count" => 5})
+        |> Map.put("deltas", %{"count" => 1})
+
+      assert parse(raw([entry])) == {:error, "write 0: only an update carries deltas"}
+    end
+
+    test "refuses deltas on a delete" do
+      entry =
+        Module10
+        |> delete()
+        |> Map.put("deltas", %{"count" => 1})
+
+      assert parse(raw([entry])) == {:error, "write 0: only an update carries deltas"}
+    end
+
+    test "refuses deltas on an edge" do
+      entry =
+        "add_relationship"
+        |> edge(Module16, "secrets")
+        |> Map.put("deltas", %{"count" => 1})
+
+      assert parse(raw([entry])) == {:error, "write 0: only an update carries deltas"}
+    end
+
+    test "refuses a delete carrying data" do
+      entry =
+        Module2
+        |> delete()
+        |> Map.put("data", %{"c" => "x"})
+
+      assert parse(raw([entry])) == {:error, "write 0: a delete carries no data"}
+    end
+
+    test "refuses a based_on that is not an object" do
+      entry = update(Module2, %{"c" => "x"}, based_on: [3])
+
+      assert parse(raw([entry])) == {:error, "write 0: based_on must be an object"}
+    end
+
+    test "refuses a based_on naming a field a client cannot write" do
+      entry = update(Module2, %{"c" => "x"}, based_on: %{"nope" => 3})
+
+      assert parse(raw([entry])) ==
+               {:error,
+                ~s[write 0: "nope" is not a field of Hologram.Test.Fixtures.Entity.Module2 a client can write]}
+    end
+
+    test "refuses a based_on revision that is not a positive integer" do
+      assert parse(raw([update(Module2, %{"c" => "x"}, based_on: %{"c" => 0})])) ==
+               {:error, ~s(write 0: based_on."c" must be a positive integer)}
+
+      assert parse(raw([update(Module2, %{"c" => "x"}, based_on: %{"c" => "3"})])) ==
+               {:error, ~s(write 0: based_on."c" must be a positive integer)}
+    end
+
+    test "refuses a relationship that is not a string" do
+      entry = %{edge("add_relationship", Module16, "secrets") | "relationship" => 1}
+
+      assert parse(raw([entry])) == {:error, "write 0: relationship must be a string"}
+    end
+
+    test "refuses a relationship the entity type does not declare" do
+      entry = edge("add_relationship", Module16, "nope")
+
+      assert parse(raw([entry])) ==
+               {:error,
+                ~s[write 0: "nope" is not a to-many relationship of Hologram.Test.Fixtures.Entity.Module16]}
+    end
+
+    test "refuses a to-one relationship as an edge" do
+      entry = edge("add_relationship", Module3, "c")
+
+      assert parse(raw([entry])) ==
+               {:error,
+                ~s[write 0: "c" is not a to-many relationship of Hologram.Test.Fixtures.Entity.Module3]}
+    end
+
+    test "refuses a target id that is not an entity id" do
+      entry = edge("add_relationship", Module16, "secrets", target_id: "nope")
+
+      assert parse(raw([entry])) == {:error, "write 0: target_id must be an entity id"}
+    end
+
+    test "refuses a stamp on an edge" do
+      entry =
+        "add_relationship"
+        |> edge(Module16, "secrets")
+        |> Map.put("stamp", 5)
+
+      assert parse(raw([entry])) == {:error, "write 0: an edge carries no stamp"}
+    end
+
+    # The whole point of parsing here: a value the model cannot hold is answered as a bad envelope
+    # rather than raised out of the applier, which the endpoint would turn into a 500.
+    test "refuses an integer too large for the float attribute it names" do
+      too_large =
+        "9"
+        |> String.duplicate(400)
+        |> String.to_integer()
+
+      assert parse(raw([create(Module4, %{"d" => too_large})])) ==
+               {:error, ~s(write 0: "d" is not a valid float)}
+    end
+
+    test "refuses the server's authority as a claim" do
+      entry = create(Module2, %{"c" => "x"}, claim: "trust")
+
+      assert parse(raw([entry])) ==
+               {:error, "write 0: trust is the server's authority - a client cannot claim it"}
+    end
+
+    test "refuses an operation no atom spells" do
+      entry = create(Module2, %{"c" => "x"}, claim: ["authorize", "no_such_operation_declared"])
+
+      assert parse(raw([entry])) ==
+               {:error,
+                "write 0: claim names no operation Hologram.Test.Fixtures.Entity.Module2 declares: " <>
+                  ~s("no_such_operation_declared")}
+    end
+
+    test "refuses an operation the entity type does not declare" do
+      entry = create(Module2, %{"c" => "x"}, claim: ["authorize", "archive"])
+
+      assert parse(raw([entry])) ==
+               {:error,
+                "write 0: claim names no operation Hologram.Test.Fixtures.Entity.Module2 declares: " <>
+                  ~s("archive")}
+    end
+
+    test "refuses a claim that is neither null nor an authorize pair" do
+      entry = create(Module2, %{"c" => "x"}, claim: ["nope"])
+
+      assert parse(raw([entry])) ==
+               {:error, ~s(write 0: claim must be null or ["authorize", operation])}
+    end
+
+    test "refuses a stamp that is not a positive integer" do
+      assert parse(raw([create(Module2, %{"c" => "x"}, stamp: 0)])) ==
+               {:error, "write 0: stamp must be a positive integer"}
+
+      assert parse(raw([create(Module2, %{"c" => "x"}, stamp: nil)])) ==
+               {:error, "write 0: stamp must be a positive integer"}
+    end
+
+    test "refuses an update of a role grant" do
+      entry = update(RoleGrant, grant_data(), based_on: %{"role" => 3})
+
+      assert parse(raw([entry])) ==
+               {:error, "write 0: a role grant is created or deleted whole"}
+    end
+
+    # The store declares no to-many relationship, so an edge naming it is refused one step earlier
+    # than the grant guard - by the relationship it has to name and cannot. The guard stands behind
+    # that rather than instead of it, for a store that ever gains one.
+    test "refuses an edge on a role grant" do
+      entry = edge("add_relationship", RoleGrant, "user")
+
+      assert parse(raw([entry])) ==
+               {:error,
+                ~s(write 0: "user" is not a to-many relationship of Hologram.Auth.RoleGrant)}
+    end
+
+    test "refuses a role grant carrying a claim" do
+      entry = create(RoleGrant, grant_data(), claim: ["authorize", "update"])
+
+      assert parse(raw([entry])) ==
+               {:error,
+                "write 0: a role grant claims nothing - the grant_role and revoke_role rules " <>
+                  "are its gate"}
+    end
+
+    test "refuses a role grant naming a role its resource type does not declare" do
+      entry = create(RoleGrant, grant_data(%{"role" => "owner"}))
+
+      assert parse(raw([entry])) ==
+               {:error,
+                "write 0: role :owner is not declared on Hologram.Test.Fixtures.Policy.Module2"}
+    end
+
+    test "refuses a role grant naming a resource type this build does not store" do
+      entry = create(RoleGrant, grant_data(%{"entity_type" => "map"}))
+
+      assert parse(raw([entry])) ==
+               {:error, ~s(write 0: entity_type "map" is not an entity type of this build)}
+    end
+
+    test "refuses a role grant naming no user" do
+      grant_id = RoleGrant.derive_id(nil, PolicyModule2, @target_id, :member)
+      data = Map.delete(grant_data(), "user_id")
+      entry = create(RoleGrant, data, id: grant_id)
+
+      assert parse(raw([entry])) ==
+               {:error, "write 0: a role grant names the user it is granted to"}
+    end
+
+    # The id derives for this shape too, and nothing downstream can resolve a nil type - so the
+    # parser is the one place that can say no.
+    test "refuses a role grant naming an entity id but no entity type" do
+      grant_id = RoleGrant.derive_id(@user_id, nil, @target_id, :member)
+      entry = create(RoleGrant, grant_data(%{"entity_type" => nil}), id: grant_id)
+
+      assert parse(raw([entry])) ==
+               {:error, "write 0: a role grant naming an entity id names its entity type too"}
+    end
+
+    # The same shape with the type left out rather than sent as nil - a key a pattern on the data
+    # would not see, and the applier would raise on the same nothing.
+    test "refuses a role grant naming an entity id and no entity type at all" do
+      grant_id = RoleGrant.derive_id(@user_id, nil, @target_id, :member)
+      data = Map.delete(grant_data(), "entity_type")
+      entry = create(RoleGrant, data, id: grant_id)
+
+      assert parse(raw([entry])) ==
+               {:error, "write 0: a role grant naming an entity id names its entity type too"}
+    end
+
+    # @id is a well-formed entity id that no derivation produces - the shape a client minting
+    # its own v7 for the store would send.
+    test "refuses a role grant whose id is not derived from it" do
+      entry = create(RoleGrant, grant_data(), id: @id)
+
+      assert parse(raw([entry])) ==
+               {:error, "write 0: a role grant's id is derived from the grant it names"}
+    end
+  end
+end

@@ -8,10 +8,13 @@ defmodule Hologram.LiveReload do
   alias Hologram.Assets.ManifestCache
   alias Hologram.Assets.PageDigestRegistry
   alias Hologram.Assets.PathRegistry
+  alias Hologram.DB
+  alias Hologram.DB.QueryCache
   alias Hologram.LiveReload.Diagnostic
   alias Hologram.Realtime.SubscriptionRegistry
   alias Hologram.Reflection
   alias Hologram.Router.PageModuleResolver
+  alias Hologram.Sync.PageWindows
 
   @doc """
   Reloads the application after a change of the given file (nil when a request for a pending page
@@ -90,21 +93,29 @@ defmodule Hologram.LiveReload do
     pages = List.delete(built, :runtime)
 
     # The first batch of a pass is where the registries learn what the compile wrote: the pages and
-    # routes of the module info dump, the static files, among them a new runtime bundle, and the page
-    # digests. Later batches change the page digests only.
-    if state.pass.registries_reloaded? do
-      PageDigestRegistry.reload()
-    else
-      reload_runtime()
-    end
+    # routes of the module info dump, the static files, among them a new runtime bundle, the page
+    # digests, the page windows and the queries, with the database schema reconciled first. Later
+    # batches change the page digests only.
+    reloaded =
+      if state.pass.registries_reloaded? do
+        PageDigestRegistry.reload()
+      else
+        reload_registries()
+      end
 
     # A rebuilt runtime bundle no longer matches the page bundles any tab holds, so every tab
     # reloads, the ones on pages this pass has not built yet included: they ask for their page,
-    # which is then built next.
-    if :runtime in built do
-      broadcast_reload(:all)
-    else
-      broadcast_reload(pages)
+    # which is then built next. A tab only ever reloads into a converged database.
+    case reloaded do
+      {:error, message} ->
+        broadcast_compilation_error(message)
+
+      _reloaded ->
+        if :runtime in built do
+          broadcast_reload(:all)
+        else
+          broadcast_reload(pages)
+        end
     end
 
     {released_waiters, waiters} = Map.split(state.waiters, pages)
@@ -336,18 +347,23 @@ defmodule Hologram.LiveReload do
   @doc """
   Reloads the application after a file change by recompiling the Elixir code and then running the
   Hologram compile with the given options, `:next_batch` and `:bundles_built`, through which the
-  scheduler orders the pages and reloads the tabs batch by batch (see `handle_call/3`). The
-  runtime registries are reloaded once more at the end, for a compile that built no bundle.
+  scheduler orders the pages and reloads the tabs batch by batch (see `handle_call/3`). The database
+  schema is reconciled and the registries are reloaded before the first batch's tabs reload, and once
+  more at the end, for a compile that built no bundle.
 
-  If code reloading fails, broadcasts a compilation error instead.
+  If code reloading or schema reconciliation fails, broadcasts a compilation error
+  instead - clients only ever reload into a converged database.
   """
   @spec reload(String.t() | nil, any, keyword) :: :ok
   def reload(_file_path, endpoint, opts) do
     case reload_code(endpoint) do
       :ok ->
         recompile_hologram(opts)
-        reload_runtime()
-        :ok
+
+        case reload_registries() do
+          :ok -> :ok
+          {:error, message} -> broadcast_compilation_error(message)
+        end
 
       {:error, output} ->
         broadcast_compilation_error(output)
@@ -489,11 +505,37 @@ defmodule Hologram.LiveReload do
     # Elixir prints that rather than returning it.
   end
 
+  # Data-layer reload failures surface like compilation errors - logged loudly
+  # and broadcast to connected clients. The query cache reloads here rather than
+  # with the runtime registries because it sits behind the database: companion
+  # reconciliation runs DDL, and a recompile that refused a query builder fails
+  # before this runs at all, leaving the previous dump in place to reload.
+  defp reload_database do
+    DB.reload()
+    QueryCache.reload()
+
+    :ok
+  rescue
+    error ->
+      message = Exception.message(error)
+      Logger.error("Hologram: data layer reload failed: #{message}")
+
+      {:error, message}
+  end
+
+  defp reload_registries do
+    with :ok <- reload_database() do
+      reload_runtime()
+      :ok
+    end
+  end
+
   defp reload_runtime do
     PageModuleResolver.reload()
     PathRegistry.reload()
     ManifestCache.reload()
     PageDigestRegistry.reload()
+    PageWindows.reload()
   end
 
   defp reply_to_waiters(waiters) do

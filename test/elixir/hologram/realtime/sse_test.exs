@@ -9,7 +9,13 @@ defmodule Hologram.Realtime.SSETest do
   alias Hologram.Realtime.Handshake
   alias Hologram.Realtime.Receipt
   alias Hologram.Realtime.SubscriptionRegistry
+  alias Hologram.Runtime.ReplicaIdentity
+  alias Hologram.Sync.Frame
+  alias Hologram.Test.Fixtures.Entity.Module15
+  alias Hologram.Test.Fixtures.Entity.Module2, as: EntityModule2
   alias Hologram.Test.Fixtures.Realtime.SSE.Module1
+
+  @server_only_token_js ~s'[Type.atom("token"), Type.map([[Type.atom("__struct__"), Type.atom("Elixir.Hologram.Entity.ServerOnly")], [Type.atom("attribute"), Type.atom("token")]])]'
 
   setup do
     wait_for_process_cleanup(Hologram.PubSub)
@@ -164,6 +170,23 @@ defmodule Hologram.Realtime.SSETest do
 
       assert encode_action_envelope(42, action) == "event: action\nid: 42\ndata: #{encoded}\n\n"
     end
+
+    test "replaces server-only attribute values in the action params with the sentinel" do
+      row = %Module15{
+        id: "test-id-sse-1",
+        label: "Report",
+        secret_note: "note_secret_v1",
+        token: "tok_K3xR"
+      }
+
+      action = %Action{name: :my_action, params: %{row: row}, target: "c1"}
+
+      envelope = encode_action_envelope(42, action)
+
+      assert String.contains?(envelope, @server_only_token_js)
+      refute String.contains?(envelope, "note_secret_v1")
+      refute String.contains?(envelope, "tok_K3xR")
+    end
   end
 
   describe "encode_add_sub_receipts_envelope/2" do
@@ -197,6 +220,21 @@ defmodule Hologram.Realtime.SSETest do
 
       assert encode_broadcast_envelope(1, :ping, %{}, ["page"]) ==
                "event: broadcast\nid: 1\ndata: #{encoded}\n\n"
+    end
+
+    test "replaces server-only attribute values in the broadcast params with the sentinel" do
+      row = %Module15{
+        id: "test-id-sse-2",
+        label: "Report",
+        secret_note: "note_secret_v2",
+        token: "tok_M6zY"
+      }
+
+      envelope = encode_broadcast_envelope(42, :append, %{row: row}, ["chat"])
+
+      assert String.contains?(envelope, @server_only_token_js)
+      refute String.contains?(envelope, "note_secret_v2")
+      refute String.contains?(envelope, "tok_M6zY")
     end
   end
 
@@ -298,6 +336,92 @@ defmodule Hologram.Realtime.SSETest do
     end
   end
 
+  describe "greeting/1" do
+    defp sync_query_string(extra \\ "") do
+      "/?model_hash=a3f9c2&page=MyApp.BoardPage&protocol_version=1" <> extra
+    end
+
+    test "reads what a client said about sync" do
+      conn = Plug.Test.conn(:get, sync_query_string())
+
+      assert greeting(conn) == %{
+               cursor: nil,
+               model_hash: "a3f9c2",
+               page: MyApp.BoardPage,
+               protocol_version: 1,
+               replica_id: nil,
+               replica_token: nil
+             }
+    end
+
+    test "reads the replica a client presents" do
+      conn =
+        Plug.Test.conn(
+          :get,
+          sync_query_string("&replica_id=r1&replica_token=SFMyNTY.stated")
+        )
+
+      assert greeting(conn).replica_id == "r1"
+      assert greeting(conn).replica_token == "SFMyNTY.stated"
+    end
+
+    test "reads the place a returning client names" do
+      conn = Plug.Test.conn(:get, sync_query_string("&cursor=g8uxAAAAZQ"))
+
+      assert greeting(conn).cursor == "g8uxAAAAZQ"
+    end
+
+    test "reads nothing from a client that said nothing about sync" do
+      conn = Plug.Test.conn(:get, "/?instance_id=whatever")
+
+      assert greeting(conn) == %{}
+    end
+  end
+
+  # What a stream is willing to say about a client's own writes rests on this: a frame naming how
+  # far a replica's batches are applied is only safe to send to a session that is really that
+  # replica's, and the statement is checked the same way a batch's is.
+  describe "verified_replica_id/3" do
+    @replica_id "0192b1e9-7a2b-7c3d-8e4f-5a6b7c8d9e0f"
+
+    defp greeting_with(replica_id, token) do
+      %{replica_id: replica_id, replica_token: token}
+    end
+
+    test "answers the replica a genuine statement vouches for" do
+      session_id = "test-session-#{:erlang.unique_integer([:positive])}"
+      token = ReplicaIdentity.issue(@replica_id, session_id, nil)
+
+      conn = conn_with_identities(instance_id: "i1", session_id: session_id)
+
+      assert verified_replica_id(greeting_with(@replica_id, token), conn, nil) == @replica_id
+    end
+
+    # The statement names a session, and a stream opened by another one is not the replica's own -
+    # so the frames it gets say nothing about anybody's writes.
+    test "answers nothing for a statement minted for another session" do
+      token = ReplicaIdentity.issue(@replica_id, "some-other-session", nil)
+
+      conn = conn_with_identities(instance_id: "i1", session_id: "this-session")
+
+      assert verified_replica_id(greeting_with(@replica_id, token), conn, nil) == nil
+    end
+
+    test "answers nothing for a statement that is not genuine" do
+      conn = conn_with_identities(instance_id: "i1", session_id: "this-session")
+
+      assert verified_replica_id(greeting_with(@replica_id, "SFMyNTY.forged"), conn, nil) == nil
+    end
+
+    # A client built before any of this, or one whose page minted no identity. It syncs like any
+    # other - what it loses is only the ability to be told about its own batches.
+    test "answers nothing for a client presenting no replica" do
+      conn = conn_with_identities(instance_id: "i1", session_id: "this-session")
+
+      assert verified_replica_id(greeting_with(nil, nil), conn, nil) == nil
+    end
+  end
+
   describe "prepare/1" do
     test "sets SSE response headers" do
       conn = Plug.Test.conn(:get, "/")
@@ -328,6 +452,104 @@ defmodule Hologram.Realtime.SSETest do
 
       assert updated_conn.resp_body =~ "event: add_sub_receipts\nid: "
       assert updated_conn.resp_body =~ "\ndata: "
+    end
+  end
+
+  describe "process_message/4 on {:sync_deltas, ...}" do
+    test "pushes a sync_deltas SSE event carrying the deltas" do
+      conn = prepared_test_conn()
+      row = EntityModule2.new(a: true, c: "first")
+
+      # Built through the frame rather than by hand: a delta holds a row already written the way
+      # the wire carries it, and JSON refuses to guess at a struct rather than encoding one badly.
+      deltas = [Frame.put_entity(row)]
+
+      send(self(), {:sync_deltas, "g8uxAAAAZQ", deltas, nil})
+
+      {:cont, updated_conn} = process_message(conn, nil, nil)
+
+      assert updated_conn.resp_body =~ "event: sync_deltas\nid: "
+      assert updated_conn.resp_body =~ ~s["c":"first"]
+
+      # The place the client hands back on reconnect.
+      assert updated_conn.resp_body =~ ~s["cursor":"g8uxAAAAZQ"]
+    end
+
+    test "pushes a frame naming how far the receiving replica's batches are applied" do
+      conn = prepared_test_conn()
+
+      send(self(), {:sync_deltas, "g8uxAAAAZQ", [], 7})
+
+      {:cont, updated_conn} = process_message(conn, nil, nil)
+
+      assert updated_conn.resp_body =~ ~s["applied_seq":7]
+    end
+
+    # A stream serving no replica has no number to give, and the client must read that as nothing
+    # said rather than as nothing applied.
+    test "pushes a frame naming no applied batch of the receiving replica" do
+      conn = prepared_test_conn()
+
+      send(self(), {:sync_deltas, "g8uxAAAAZQ", [], nil})
+
+      {:cont, updated_conn} = process_message(conn, nil, nil)
+
+      assert updated_conn.resp_body =~ ~s["applied_seq":null]
+    end
+  end
+
+  describe "process_message/4 on {:sync_reload, ...}" do
+    test "pushes a sync_reload SSE event naming what disagreed" do
+      conn = prepared_test_conn()
+      send(self(), {:sync_reload, :model_hash})
+
+      {:cont, updated_conn} = process_message(conn, nil, nil)
+
+      assert updated_conn.resp_body =~ "event: sync_reload\nid: "
+      assert updated_conn.resp_body =~ ~s["reason":"model_hash"]
+    end
+  end
+
+  describe "process_message/4 on {:sync_resync, reason}" do
+    test "pushes a sync_resync SSE event" do
+      conn = prepared_test_conn()
+      send(self(), {:sync_resync, :retention})
+
+      {:cont, updated_conn} = process_message(conn, nil, nil)
+
+      assert updated_conn.resp_body =~ "event: sync_resync\nid: "
+      assert updated_conn.resp_body =~ ~s["reason":"retention"]
+    end
+  end
+
+  describe "process_message/4 on {:sync_synced, scope, cursor}" do
+    test "pushes a synced SSE event" do
+      conn = prepared_test_conn()
+      send(self(), {:sync_synced, :page, nil})
+
+      {:cont, updated_conn} = process_message(conn, nil, nil)
+
+      assert updated_conn.resp_body =~ "event: synced\nid: "
+    end
+
+    test "carries the scope the client may now answer from its own store" do
+      conn = prepared_test_conn()
+      send(self(), {:sync_synced, :all, "Nzc4LjA"})
+
+      {:cont, updated_conn} = process_message(conn, nil, nil)
+
+      assert updated_conn.resp_body =~ ~s["scope":"all"]
+    end
+
+    # The one frame a client filled and then left alone ever receives, so the place has to be on
+    # it or that client has nowhere to come back from.
+    test "carries the place the client may come back from" do
+      conn = prepared_test_conn()
+      send(self(), {:sync_synced, :all, "Nzc4LjA"})
+
+      {:cont, updated_conn} = process_message(conn, nil, nil)
+
+      assert updated_conn.resp_body =~ ~s["cursor":"Nzc4LjA"]
     end
   end
 
@@ -902,8 +1124,47 @@ defmodule Hologram.Realtime.SSETest do
       conn = Plug.Conn.fetch_query_params(prepared_test_conn())
       send(self(), {:identity_changed, "new-session-id", 7})
 
-      assert {:cont, ^conn, "new-session-id", 7} =
+      assert {:cont, ^conn, "new-session-id", 7, _sync_session} =
                process_message(conn, "old-session-id", nil)
+    end
+
+    # Who the client is decides what its session lets through, and that is fixed when the session
+    # starts. A stream that stays open across a login, a logout or a switch would otherwise go on
+    # filtering rows as whoever was there before, and the client would go on holding them.
+    test "sends the client through the resync door when its identity changes" do
+      conn = Plug.Conn.fetch_query_params(prepared_test_conn())
+      old_session = start_supervised!({Agent, fn -> :sync_session end})
+
+      send(self(), {:identity_changed, "session-1", 8})
+
+      {:cont, _conn, _session_id, _user_id, _sync_session} =
+        process_message(conn, "session-1", 7, sync_session: old_session)
+
+      assert_received {:sync_resync, :identity}
+    end
+
+    test "stops the session that was serving the identity it replaced" do
+      conn = Plug.Conn.fetch_query_params(prepared_test_conn())
+      old_session = start_supervised!({Agent, fn -> :sync_session end})
+      ref = Process.monitor(old_session)
+
+      send(self(), {:identity_changed, "session-1", 8})
+
+      process_message(conn, "session-1", 7, sync_session: old_session)
+
+      assert_receive {:DOWN, ^ref, :process, ^old_session, :normal}
+    end
+
+    # A stream carrying no sync at all - a client built before any of it, or one whose build has
+    # no data model - has nothing to rescope, and must not be disturbed for it.
+    test "leaves a connection that is not syncing alone" do
+      conn = Plug.Conn.fetch_query_params(prepared_test_conn())
+      send(self(), {:identity_changed, "session-1", 8})
+
+      assert {:cont, _conn, _session_id, _user_id, nil} =
+               process_message(conn, "session-1", 7)
+
+      refute_received {:sync_resync, _reason}
     end
 
     test "subscribes to the user identity topic on login (nil -> 7)" do
@@ -995,7 +1256,8 @@ defmodule Hologram.Realtime.SSETest do
       conn = prepared_test_conn_with_identities(instance_id: instance_id)
       send(self(), {:identity_changed, "session-1", 8})
 
-      {:cont, updated_conn, _session, _user} = process_message(conn, "session-1", 7)
+      {:cont, updated_conn, _session, _user, _sync_session} =
+        process_message(conn, "session-1", 7)
 
       assert updated_conn.resp_body =~ "event: drop_sub_receipts\nid: "
       assert SubscriptionRegistry.bindings_of(instance_id) == %{}
@@ -1015,7 +1277,8 @@ defmodule Hologram.Realtime.SSETest do
       conn = prepared_test_conn_with_identities(instance_id: instance_id)
       send(self(), {:identity_changed, "session-new", 7})
 
-      {:cont, updated_conn, _session, _user} = process_message(conn, "session-old", 7)
+      {:cont, updated_conn, _session, _user, _sync_session} =
+        process_message(conn, "session-old", 7)
 
       refute updated_conn.resp_body =~ "event: drop_sub_receipts"
       assert SubscriptionRegistry.bindings_of(instance_id) == %{{:notifications, "c1"} => 7}

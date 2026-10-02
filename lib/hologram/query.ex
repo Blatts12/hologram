@@ -1,0 +1,1521 @@
+defmodule Hologram.Query do
+  @moduledoc false
+
+  alias Hologram.Entity
+  alias Hologram.Entity.Metadata
+  alias Hologram.Policy
+  alias Hologram.Query.Placeholder
+  alias Hologram.Reflection
+
+  @directions [:asc, :desc]
+  @equality_operators [:!=, :==]
+  @membership_operators [:in, :not_in]
+  @orderable_types [:date, :datetime, :enum, :float, :integer, :string, :time]
+  @ordering_operators [:<, :<=, :>, :>=]
+
+  # A query term - what the stages build and the executors run. Each field is named for the stage
+  # that sets it, with one exception: one/1 and count/1 set cardinality, since a term cannot be
+  # both. A term records fields, not the order the stages were called in - filter appends,
+  # order_by replaces, include adds a key - so two pipes reaching the same fields are one query,
+  # which is what Hologram.Query.Registry.id/1 relies on. A term is always about one entity type,
+  # so a struct written without one is refused at the literal.
+  @enforce_keys [:entity]
+
+  defstruct cardinality: :set,
+            entity: nil,
+            filter: [],
+            include: %{},
+            limit: nil,
+            offset: nil,
+            order_by: [],
+            trust: false
+
+  @type bound :: non_neg_integer | placeholder | nil
+
+  @type cardinality :: :count | :one | :set
+
+  @type operator :: :!= | :< | :<= | :== | :> | :>= | :in | :not_in
+
+  @type ordering :: {atom | placeholder, :asc | :desc | placeholder}
+
+  @type placeholder :: {:placeholder, atom}
+
+  @type predicate :: {atom | placeholder, operator, any}
+
+  @type t :: %__MODULE__{
+          cardinality: cardinality,
+          entity: module,
+          filter: list(predicate),
+          include: %{atom => t},
+          limit: bound,
+          offset: bound,
+          order_by: list(ordering),
+          trust: boolean
+        }
+
+  @doc """
+  Records on the given entity struct that the given to-many relationship gains an edge to the
+  entity with the given target id, and returns the struct - the edge is added when DB.update/1
+  writes the struct.
+
+  The entity is an entity struct - one a query read, or one Entity.new/2 constructed. The
+  relationship is one of its declared to-many relationships, and the target id an entity id.
+  The edge is recorded in the struct's metadata under the relationship and target - a later
+  add_relationship/3 or delete_relationship/3 for the same edge replaces it, so a struct
+  carries one operation per edge, the last one recorded. The relationship's own field is left as
+  it is: what the struct holds of the relationship's rows is what the query read, and the
+  recorded edge is not among them until it is written. Whether the target exists is the
+  write's to judge.
+
+  Raises ArgumentError when the entity is not an entity struct, when the target id is not a
+  string, or when the relationship is a to-one relationship, an attribute, or unknown.
+  """
+  @spec add_relationship(Entity.t(), atom, Entity.id()) :: Entity.t()
+  def add_relationship(entity, relationship_name, target_id) do
+    put_relationship_op(entity, relationship_name, target_id, :add, "add_relationship")
+  end
+
+  @doc """
+  Claims the acting user's authority for the given operation on the given entity struct and
+  returns the struct - the DB verb writing it evaluates that operation, against the row, for
+  the acting user, instead of the operation the verb performs on its own.
+
+  The entity is an entity struct - one a query read, or one Entity.new/2 constructed. The
+  operation is an atom naming an entity operation the entity type declares an allow line for -
+  `:pin`, `:publish`, `:archive` - and is recorded in the struct's metadata as the claim the
+  write carries. There is no user argument: the subject of a claim is always the acting user.
+  A write carries exactly one claim - a struct already claiming an authority, through
+  authorize/2 or trust/1, cannot claim another.
+
+  Raises ArgumentError when the entity is not an entity struct, when the operation is not an
+  atom, when the operation is neither a framework operation nor one an allow line on the entity
+  type names (see Hologram.Policy.validate_operation!/2), or when the struct already carries a
+  claim.
+  """
+  @spec authorize(Entity.t(), atom) :: Entity.t()
+  def authorize(entity, operation) when is_atom(operation) do
+    entity_type = entity_type!(entity, "authorize")
+
+    Policy.validate_operation!(entity_type, operation)
+
+    put_claim(entity, {:authorize, operation}, "authorize")
+  end
+
+  def authorize(_entity, operation) do
+    raise ArgumentError, message: "authorize takes an operation atom, got: #{inspect(operation)}"
+  end
+
+  @doc """
+  Marks the given query as counting and returns the resulting query term.
+
+  The query is an entity type module (starting a fresh query term) or an already built
+  query term. A counting query evaluates to a non-negative integer - the number of
+  results the query otherwise evaluates to, view bounds included.
+
+  Raises ArgumentError when the query is neither an entity type module nor a query
+  term, or when a cardinality is already marked.
+  """
+  @spec count(module | t) :: t
+  def count(query) do
+    term = to_term(query)
+
+    if term.cardinality != :set do
+      raise ArgumentError,
+        message: "cardinality is already set to #{inspect(term.cardinality)}"
+    end
+
+    %{term | cardinality: :count}
+  end
+
+  @doc """
+  Records on the given entity struct that the given integer attribute is to move DOWN by the
+  given amount, and returns the struct - the attribute is moved when DB.update/1 writes the
+  struct. increment/3 with the opposite sign and one stricter rule: the amount is a positive
+  integer, since a literal move down is what this spelling is for - a computed amount of either
+  sign goes through increment/3. Otherwise the same arguments, the same recording and the same
+  rules - see increment/3.
+  """
+  @spec decrement(Entity.t(), atom, pos_integer) :: Entity.t()
+  def decrement(entity, name, amount) do
+    put_delta(entity, name, amount, -1, "decrement")
+  end
+
+  @doc """
+  Records on the given entity struct that the given to-many relationship loses its edge to the
+  entity with the given target id, and returns the struct - the edge is deleted when
+  DB.update/1 writes the struct. add_relationship/3 with the opposite operation: the same
+  arguments, the same recording, the same replacement of an earlier operation on the edge,
+  and deleting an edge the relationship does not hold is a no-op at the write.
+
+  Raises ArgumentError when the entity is not an entity struct, when the target id is not a
+  string, or when the relationship is a to-one relationship, an attribute, or unknown.
+  """
+  @spec delete_relationship(Entity.t(), atom, Entity.id()) :: Entity.t()
+  def delete_relationship(entity, relationship_name, target_id) do
+    put_relationship_op(entity, relationship_name, target_id, :delete, "delete_relationship")
+  end
+
+  @doc """
+  Appends predicates to the given query's filter list and returns the resulting query term.
+
+  The query is an entity type module (starting a fresh query term) or an already built
+  query term. Predicates are a keyword list of attribute names (declared or system) and
+  predicate values. A predicate value is a plain value (equality), an operator tuple -
+  `{:==, value}`, `{:!=, value}`, `{:in, list}`, `{:not_in, list}`, or an ordering
+  comparison `{:<, value}`, `{:<=, value}`, `{:>, value}`, `{:>=, value}` - a bare
+  list of plain values (membership shorthand for `{:in, list}`), or a list of operator
+  tuples applying all of them to the attribute (an AND conjunction, e.g.
+  `[{:>=, monday}, {:<, next_monday}]`). Lists mixing plain values and operator tuples
+  are invalid. Each predicate becomes one or more `{attribute, operator, value}`
+  triples, appended in the given order. A query term is a Hologram.Query struct - a
+  plain-data description of a query, so building it never executes anything.
+
+  Ordering comparisons require an orderable attribute - every type but boolean and uuid -
+  and a non-nil operand - SQL comparisons with NULL never match, so a nil operand would
+  mean different things on the two execution tiers. A comparison on an enum attribute
+  reads the declared `values:` order, so `{:>=, :medium}` on `[:low, :medium, :high]`
+  means medium or high, and the operand must be one of the declared values. A comparison
+  on a string attribute reads the order `order_by` sorts it in - case and diacritics fold
+  the way they do in the list - and a bound names a position in that list, spelled the way
+  the list spells it: `{:>=, "M"}` reaches `M`, `m`, `Mango`, while `{:>=, "m"}` starts at
+  `m`.
+
+  An integer Range value (`3..10`, bare or as `{:in, range}`) is shorthand for the
+  inclusive bounds - it expands into a `>=` triple and a `<=` triple. Ranges require
+  an integer attribute, step 1, and at least one element.
+
+  Membership lists must be non-empty lists of plain values. Nil is a regular value:
+  a nil element means the membership matches missing values too (`[nil, :done]` reads
+  "done or unset"), and negated membership without nil matches missing values.
+
+  A `Hologram.Query.Placeholder` struct in a value position - bare, as an operator-tuple
+  operand, or as a membership list element - stands for a runtime-bound value: the
+  triple stores a `{:placeholder, name}` leaf instead of a concrete value, and value
+  validation is skipped (the concrete value is validated when the placeholder binds at
+  execution). A membership-element placeholder binds a single value of the attribute's
+  type. Ordering comparisons still require an orderable attribute.
+
+  A placeholder also stands where an ordering key or its direction goes (`order_by(query, sort)`,
+  `order_by(query, name: dir)`), where a view bound goes (`limit(query, size)`,
+  `offset(query, start)`), and where a filtered attribute's name goes
+  (`filter(query, [{attribute, value}])`), storing a `{:placeholder, name}` leaf in place of the
+  attribute, the direction or the bound, and skipping the checks that would need a concrete
+  one. A placeholder-keyed predicate leaves its operand unchecked too - the attribute's type is
+  unknown, so nothing about the operand can be judged against it.
+
+  A leaf names the ARGUMENT a value came from, not the value: a computed operand carries the name
+  of the argument it derives from, so `b: n * 2` stores `{:placeholder, :n}`. Nothing binds a leaf
+  back to a value - both execution tiers call the builder with real values and normalize THAT - so
+  the name serves reading a term, never evaluating one.
+
+  To-one reference fields (`<relationship name>_id`) are filterable alongside attributes -
+  they carry the `:uuid` type, so they take equality, membership and placeholder values, while
+  ordering comparisons and ranges reject them like any other non-orderable type. To-many
+  relationships have no reference field, and neither relationship name itself is filterable.
+
+  Raises ArgumentError when the query is neither an entity type module nor a query term,
+  when the predicates are not a keyword list, when a predicate names a relationship or
+  an unknown attribute, or when a predicate value is invalid (unknown operator, invalid
+  membership list, list or tuple operand for an equality operator).
+  """
+  @spec filter(module | t, keyword) :: t
+  def filter(query, predicates) do
+    term = to_term(query)
+
+    if not filterable_predicates?(predicates) do
+      raise ArgumentError,
+        message: "filter predicates must be a keyword list, got: #{inspect(predicates)}"
+    end
+
+    triples = predicate_triples!(term.entity, predicates)
+
+    %{term | filter: term.filter ++ triples}
+  end
+
+  @doc """
+  Adds relationship traversals to the given query's include map and returns the
+  resulting query term.
+
+  The query is an entity type module (starting a fresh query term) or an already built
+  query term. Relationships must be declared on the query's entity type - the whole
+  related entity (to-one) or entity set (to-many) is embedded in results under the
+  relationship's name.
+
+  The spec is a relationship name, or a shape list describing a traversal tree as
+  data: entries are relationship names, `{name, nested_spec}` pairs traversing deeper
+  (keyword syntax reads naturally - `include(query, project: :owner)`,
+  `include(query, [:assignee, project: :owner])`), or `{name, sub_builder}` pairs.
+  A sub-builder is a one-argument function receiving the related entity's base query
+  term and returning a refined query term for the same entity - to-many includes take
+  nested clauses this way. `include/3` passes a sub-builder for a single relationship
+  name directly.
+
+  To-one includes take no clauses (a single embedded entity has nothing to filter,
+  order, or slice) - nested includes are their only refinement. Traversal depth is
+  limited to 2 levels.
+
+  Raises ArgumentError when the query is neither an entity type module nor a query
+  term, when the spec is invalid or empty, when a name is not a declared relationship,
+  when a relationship is already included, when a sub-builder is not a one-argument
+  function or does not return a query term for the related entity type, when a to-one
+  include carries clauses, or when the include depth exceeds 2 levels.
+  """
+  @spec include(module | t, atom | list, (t -> t) | nil) :: t
+  def include(query, spec, sub_builder \\ nil)
+
+  def include(query, name, nil) when is_atom(name) do
+    include(query, name, fn related_term -> related_term end)
+  end
+
+  def include(query, name, sub_builder) when is_atom(name) and is_function(sub_builder, 1) do
+    term = to_term(query)
+
+    {target, kind} = validate_relationship_name!(name, term.entity)
+
+    if Map.has_key?(term.include, name) do
+      raise ArgumentError,
+        message: "relationship #{inspect(name)} is already included"
+    end
+
+    related_base_term = to_term(target)
+    sub_term = sub_builder.(related_base_term)
+
+    validate_sub_term!(sub_term, name, target, kind)
+
+    %{term | include: Map.put(term.include, name, sub_term)}
+  end
+
+  def include(query, spec, nil) when is_list(spec) do
+    if spec == [] do
+      raise ArgumentError, message: "include spec must not be empty"
+    end
+
+    term = to_term(query)
+
+    Enum.reduce(spec, term, fn entry, acc -> include_spec_entry!(acc, entry) end)
+  end
+
+  def include(_query, name, sub_builder) when is_atom(name) do
+    raise ArgumentError,
+      message:
+        "include sub-builder for relationship #{inspect(name)} must be a one-argument function, got: #{inspect(sub_builder)}"
+  end
+
+  def include(_query, spec, _sub_builder) when is_list(spec) do
+    raise ArgumentError,
+      message:
+        "an include shape spec takes no separate sub-builder - nest it in the spec as a {name, sub_builder} pair"
+  end
+
+  def include(_query, spec, _sub_builder) do
+    raise ArgumentError,
+      message: "include spec must be a relationship name or a shape list, got: #{inspect(spec)}"
+  end
+
+  @doc """
+  Records on the given entity struct that the given integer attribute is to move UP by the given
+  amount, and returns the struct - the attribute is moved when DB.update/1 writes the struct.
+
+  The entity is an entity struct - one a query read, or one Entity.new/2 constructed. The name is
+  a counter - a declared attribute of type :integer that is not optional, so it always holds a
+  number - and the amount any integer: a negative one moves the attribute down, which is how a
+  computed amount passes through with its sign, and decrement/3 is the readable spelling for a
+  literal move down. The amount is recorded in the struct's metadata as an increment op under
+  the attribute's name (decrement/3 records a negative one), and several increments and
+  decrements of one attribute add up, so a sum that reaches zero leaves nothing recorded. The struct's own field moves with it, so a caller
+  reads back the value it asked for - a preview: what the attribute ends up holding is the
+  row's to compute at the write, from whatever value it holds then, which is what lets two
+  writers moving one attribute add up instead of one overwriting the other. Only the recorded
+  amount is written, never the field. The attribute's constraints are judged on that result at
+  the write, so a move that would cross a declared minimum, maximum or range is reported by
+  DB.update/1.
+
+  Stages apply in order and the struct holds one op per attribute: moving an attribute the
+  struct already carries a put value for folds the amount into that value (put 10 then
+  increment 1 records a put of 11), and putting an attribute the struct carries an increment for
+  replaces the increment.
+
+  Raises ArgumentError when the entity is not an entity struct, when the amount is not an
+  integer, when the name is an optional integer attribute, a non-integer attribute, a
+  relationship, a system attribute, or unknown, when the put value the amount would fold into
+  is not an integer, or when the struct's field holds nil - a counter always holds a number,
+  and a struct that has none has nothing to move.
+  """
+  @spec increment(Entity.t(), atom, integer) :: Entity.t()
+  def increment(entity, name, amount) do
+    put_delta(entity, name, amount, 1, "increment")
+  end
+
+  @doc """
+  Sets the given query's limit - the maximum number of results the query evaluates
+  to - and returns the resulting query term.
+
+  The query is an entity type module (starting a fresh query term) or an already built
+  query term. The limit is a non-negative integer. It bounds what the query evaluates
+  to, not the underlying data. A later call replaces a limit an earlier one set.
+
+  Raises ArgumentError when the query is neither an entity type module nor a query
+  term, or when the limit is not a non-negative integer.
+  """
+  @spec limit(module | t, non_neg_integer) :: t
+  def limit(query, value) do
+    set_view_bound!(query, :limit, value)
+  end
+
+  # Returns the canonical form of the given query - the form executors run literally
+  # and the registry hashes. Normalization: sorts filter predicates into canonical
+  # order (conjunction is commutative), gives every set-returning shape a total
+  # deterministic order by appending an ascending id tiebreaker (or the id ordering
+  # itself when no ordering is set) unless id is already among the ordering keys,
+  # drops the ordering from counting queries (counts are order-invariant, view bounds
+  # included), and normalizes included sub-terms recursively - to-one includes embed
+  # a single entity and carry no ordering. Idempotent.
+  @doc false
+  @spec normalize(module | t) :: t
+  def normalize(query) do
+    query
+    |> to_term()
+    |> normalized_term()
+  end
+
+  @doc """
+  Sets the given query's offset - the number of results skipped before the query's
+  results begin - and returns the resulting query term.
+
+  The query is an entity type module (starting a fresh query term) or an already built
+  query term. The offset is a non-negative integer. It slices what the query evaluates
+  to, not the underlying data. A later call replaces an offset an earlier one set.
+
+  Raises ArgumentError when the query is neither an entity type module nor a query
+  term, or when the offset is not a non-negative integer.
+  """
+  @spec offset(module | t, non_neg_integer) :: t
+  def offset(query, value) do
+    set_view_bound!(query, :offset, value)
+  end
+
+  @doc """
+  Marks the given query as single-result and returns the resulting query term.
+
+  The query is an entity type module (starting a fresh query term) or an already built
+  query term. A single-result query evaluates to the first entity under the query's
+  total order, or nil when no entity matches - never an error on multiplicity, since
+  live re-evaluation makes transient multiplicity a normal state.
+
+  Raises ArgumentError when the query is neither an entity type module nor a query
+  term, or when a cardinality is already marked.
+  """
+  @spec one(module | t) :: t
+  def one(query) do
+    term = to_term(query)
+
+    if term.cardinality != :set do
+      raise ArgumentError,
+        message: "cardinality is already set to #{inspect(term.cardinality)}"
+    end
+
+    %{term | cardinality: :one}
+  end
+
+  @doc """
+  Sets the given query's ordering keys and returns the resulting query term.
+
+  The query is an entity type module (starting a fresh query term) or an already built
+  query term. The spec is an attribute name (ascending), or a list whose entries are
+  attribute names (ascending) or `{attribute, :asc | :desc}` tuples - keyword syntax
+  reads naturally (`order_by(query, title: :desc)`). Each entry becomes an
+  `{attribute, direction}` pair, in the given order.
+
+  An ordering is atomic - a later call replaces the ordering an earlier one set rather
+  than adding to it. Precedence is positional, so an ordering states itself in one place
+  or not at all.
+
+  An enum attribute orders by the position of its values in the declared `values:` list -
+  `[:low, :medium, :high]` sorts low, medium, high, on both execution tiers.
+
+  Raises ArgumentError when the query is neither an entity type module nor a query
+  term, when the spec is neither an attribute name nor a list, when an entry names a
+  relationship or an unknown attribute, or when a direction is neither :asc nor :desc.
+  """
+  @spec order_by(module | t, atom | list) :: t
+  def order_by(query, spec) do
+    term = to_term(query)
+
+    entries = order_entries!(spec, term.entity)
+
+    %{term | order_by: entries}
+  end
+
+  @doc """
+  Sets the given query's view bounds to the requested page and returns the resulting
+  query term.
+
+  The query is an entity type module (starting a fresh query term) or an already built
+  query term. Options are `page:` (a positive integer, 1-based) and `size:` (a positive
+  integer, the number of results per page), both required. Pagination expands into the
+  offset and limit view bounds - `paginate(page: 2, size: 20)` sets offset 20 and
+  limit 20 - and slices what the query evaluates to, not the underlying data, replacing
+  view bounds already set. Either option may be a placeholder, which makes the bounds it feeds
+  placeholders too.
+
+  Raises ArgumentError when the query is neither an entity type module nor a query
+  term, when the options are not a keyword list holding exactly :page and :size, or when
+  either option is not a positive integer.
+  """
+  @spec paginate(module | t, keyword) :: t
+  def paginate(query, opts) do
+    if not Keyword.keyword?(opts) do
+      raise ArgumentError,
+        message: "paginate options must be a keyword list, got: #{inspect(opts)}"
+    end
+
+    unknown_keys = Keyword.keys(opts) -- [:page, :size]
+
+    if unknown_keys != [] do
+      raise ArgumentError,
+        message:
+          "unknown paginate option #{inspect(hd(unknown_keys))} - supported options: :page, :size"
+    end
+
+    page = validate_paginate_option!(opts, :page)
+    size = validate_paginate_option!(opts, :size)
+
+    query
+    |> offset(paginate_offset(page, size))
+    |> limit(size)
+  end
+
+  @doc """
+  Returns the names of every placeholder leaf in the given query term, filter attributes and
+  values, view bounds, ordering keys and directions, and include sub-terms included - an
+  empty list for a term with concrete values only.
+  """
+  @spec placeholder_names(t) :: list(atom)
+  def placeholder_names(term) do
+    filter_names =
+      Enum.flat_map(term.filter, fn {name, _operator, value} ->
+        value_placeholder_names(name) ++ value_placeholder_names(value)
+      end)
+
+    bound_names = Enum.flat_map([term.limit, term.offset], &value_placeholder_names/1)
+
+    order_names =
+      Enum.flat_map(term.order_by, fn {key, direction} ->
+        value_placeholder_names(key) ++ value_placeholder_names(direction)
+      end)
+
+    include_names =
+      term.include
+      |> Map.values()
+      |> Enum.flat_map(&placeholder_names/1)
+
+    filter_names ++ bound_names ++ order_names ++ include_names
+  end
+
+  @doc false
+  @spec predicate_triples!(module, keyword) :: list({atom, atom, any})
+  def predicate_triples!(entity_type, predicates) do
+    Enum.flat_map(predicates, fn
+      {%Placeholder{name: placeholder_name}, value} ->
+        [placeholder_key_triple(placeholder_name, value)]
+
+      {name, value} ->
+        validate_filtered_name!(name, entity_type)
+        predicate_triples!(name, value, entity_type)
+    end)
+  end
+
+  @doc """
+  Puts the given attribute values on the given entity struct and returns it, with the values
+  recorded as the changes DB.update/1 writes.
+
+  The entity is an entity struct - one a query read, or one Entity.new/2 constructed. Values
+  are a keyword list or a map keyed by declared attribute names and to-one reference fields
+  (`<relationship name>_id`) - what DB.update/3 takes as changes. Each value is set on the
+  struct's field and recorded under the same name in the struct's metadata, so a later put of
+  the same name replaces the earlier one, and replaces an increment recorded for it by
+  increment/3 or decrement/3 - stages apply in order, and the struct holds one op per attribute.
+  Values are judged at the write, not here - a value
+  the declarations refuse is reported by DB.update/1, and a struct holding one reads like any
+  other until then.
+
+  Only a put value is written: a field changed any other way - `%{entity | name: value}` - is
+  neither recorded nor written, and an entity carrying no recorded change is refused by
+  DB.update/1.
+
+  Raises ArgumentError when the entity is not an entity struct, when the values are neither a
+  keyword list nor a map, or when a name is a relationship, a system attribute, or unknown.
+  """
+  @spec put_attribute(Entity.t(), keyword | map) :: Entity.t()
+  def put_attribute(entity, values) when is_list(values) or is_map(values) do
+    entity_type = entity_type!(entity, "put_attribute")
+
+    if is_list(values) and not Keyword.keyword?(values) do
+      raise ArgumentError,
+        message:
+          "put_attribute takes a keyword list or a map of attribute values, got: #{inspect(values)}"
+    end
+
+    values_map = Map.new(values)
+
+    Enum.each(values_map, fn {name, _value} -> validate_put_name!(name, entity_type) end)
+
+    %Metadata{attribute_ops: recorded_ops} = metadata = entity.__meta__
+
+    # Stages apply in order: a put replaces whatever op the attribute carried - an earlier put or an
+    # increment alike.
+    ops =
+      Enum.reduce(values_map, recorded_ops, fn {name, value}, acc ->
+        Map.put(acc, name, {:put, value})
+      end)
+
+    entity
+    |> Map.merge(values_map)
+    |> Map.put(:__meta__, %Metadata{metadata | attribute_ops: ops})
+  end
+
+  def put_attribute(_entity, values) do
+    raise ArgumentError,
+      message:
+        "put_attribute takes a keyword list or a map of attribute values, got: #{inspect(values)}"
+  end
+
+  @doc """
+  Puts the given attribute value on the given entity struct and returns it, with the value
+  recorded as a change DB.update/1 writes - put_attribute/2 for one name and value.
+  """
+  @spec put_attribute(Entity.t(), atom, any) :: Entity.t()
+  def put_attribute(entity, name, value) do
+    put_attribute(entity, [{name, value}])
+  end
+
+  @doc """
+  Claims the server's own authority for the given entity struct and returns the struct - the
+  DB verb writing it evaluates no policy, and applies the write as trusted code would.
+
+  The entity is an entity struct - one a query read, or one Entity.new/2 constructed. The
+  claim is recorded in the struct's metadata, and is the spelling for a write no user's
+  authority is behind: recording what an external system reported, applying what a poller
+  fetched. Trust claims authority, it does not skip validation - a trusted write is validated,
+  stamped and recorded like any other, and creator roles are granted when an acting user is
+  set. A write carries exactly one claim - a struct already claiming an authority, through
+  authorize/2 or trust/1, cannot claim another.
+
+  On a query - an entity type module or a query term - it marks the query as read on the
+  server's own authority: DB.read/1 reads it raw whether or not a user is acting. The spelling
+  for a read that must see past the acting user's policies, such as finding the user an invite
+  names by email when users may read only themselves. A registered query (a component's
+  from_query) cannot carry it - the build refuses one that does - since a component's query is
+  read for the session user on both tiers.
+
+  Raises ArgumentError when the subject is neither an entity struct, an entity type module nor
+  a query term, or when a struct already carries a claim.
+  """
+  @spec trust(Entity.t() | module | t) :: Entity.t() | t
+  # A query term is a struct too, so the entity-struct clause has to say which struct it means -
+  # every other stage takes one or the other, and this one takes both.
+  def trust(%{__struct__: entity_type} = entity) when entity_type != __MODULE__ do
+    put_claim(entity, :trust, "trust")
+  end
+
+  def trust(query) do
+    term = to_term(query)
+
+    %{term | trust: true}
+  end
+
+  defp attribute_names(entity_type) do
+    definitions = entity_type.__attributes__() ++ entity_type.__system_attributes__()
+
+    definitions
+    |> Enum.map(fn {name, _type, _opts} -> name end)
+    |> Enum.sort()
+  end
+
+  defp attribute_definition(entity_type, name) do
+    definitions = entity_type.__attributes__() ++ entity_type.__system_attributes__()
+
+    Enum.find(definitions, fn {definition_name, _type, _opts} -> definition_name == name end)
+  end
+
+  # Names reach type lookups already validated, so a name matching no attribute definition
+  # is a to-one reference field - every reference column carries the entity id type.
+  defp attribute_type(entity_type, name) do
+    case attribute_definition(entity_type, name) do
+      {_name, type, _opts} -> type
+      nil -> :uuid
+    end
+  end
+
+  defp constraint_tuple?(value) do
+    is_tuple(value) and tuple_size(value) == 2 and is_atom(elem(value, 0))
+  end
+
+  # A counter is an integer attribute that always holds a number: an optional one can be nil, and
+  # there is nothing to add to nil.
+  defp counter_attribute_names(entity_type) do
+    entity_type.__attributes__()
+    |> Enum.reject(fn {_name, _type, opts} -> Keyword.get(opts, :optional) == true end)
+    |> integer_names()
+  end
+
+  # Keyword.keyword?/1 with placeholder keys admitted - a placeholder names an attribute nobody knows yet.
+  defp filterable_predicates?(predicates) when is_list(predicates) do
+    Enum.all?(predicates, fn
+      {%Placeholder{}, _value} -> true
+      {name, _value} when is_atom(name) -> true
+      _entry -> false
+    end)
+  end
+
+  defp filterable_predicates?(_predicates), do: false
+
+  # Nothing about a placeholder-keyed predicate can be checked - the attribute is unknown, so its type,
+  # its operators and its operand's shape are all unknown with it. The triple records what was
+  # written and Hologram.Query.Window drops it from the download, the real builder validating for
+  # real once the attribute arrives.
+  defp placeholder_key_triple(placeholder_name, {operator, value}) when is_atom(operator) do
+    {{:placeholder, placeholder_name}, operator, placeholder_operand(value)}
+  end
+
+  defp placeholder_key_triple(placeholder_name, value) do
+    {{:placeholder, placeholder_name}, :==, placeholder_operand(value)}
+  end
+
+  defp placeholder_operand(%Placeholder{name: placeholder_name}),
+    do: {:placeholder, placeholder_name}
+
+  defp placeholder_operand(values) when is_list(values), do: normalize_membership_values(values)
+
+  defp placeholder_operand(value), do: value
+
+  # A stage on an entity struct: the struct's type, or a refusal naming the stage.
+  defp entity_type!(%{__struct__: entity_type}, stage) do
+    if Reflection.entity?(entity_type) do
+      entity_type
+    else
+      raise ArgumentError,
+        message: "#{stage} takes an entity struct, got: #{inspect(%{__struct__: entity_type})}"
+    end
+  end
+
+  defp entity_type!(subject, stage) do
+    raise ArgumentError, message: "#{stage} takes an entity struct, got: #{inspect(subject)}"
+  end
+
+  defp filterable_names(entity_type) do
+    Enum.sort(attribute_names(entity_type) ++ reference_field_names(entity_type))
+  end
+
+  defp equality_triple!(name, operator, operand) do
+    if is_list(operand) or is_tuple(operand) or is_struct(operand, Range) do
+      raise ArgumentError,
+        message:
+          "invalid operand #{inspect(operand)} for operator #{inspect(operator)} on attribute #{inspect(name)}"
+    end
+
+    {name, operator, operand}
+  end
+
+  defp include_depth(term) do
+    if term.include == %{} do
+      0
+    else
+      max_child_depth =
+        term.include
+        |> Map.values()
+        |> Enum.map(&include_depth/1)
+        |> Enum.max()
+
+      1 + max_child_depth
+    end
+  end
+
+  defp include_spec_entry!(term, name) when is_atom(name) do
+    include(term, name)
+  end
+
+  defp include_spec_entry!(term, {name, sub_builder})
+       when is_atom(name) and is_function(sub_builder) do
+    include(term, name, sub_builder)
+  end
+
+  defp include_spec_entry!(term, {name, sub_spec}) when is_atom(name) do
+    include(term, name, fn related_term -> include(related_term, sub_spec) end)
+  end
+
+  defp include_spec_entry!(_term, entry) do
+    raise ArgumentError,
+      message:
+        "invalid include spec entry #{inspect(entry)} - use a relationship name, a {name, spec} pair, or a {name, sub_builder} pair"
+  end
+
+  defp integer_names(definitions) do
+    definitions
+    |> Enum.filter(fn {_name, type, _opts} -> type == :integer end)
+    |> Enum.map(fn {name, _type, _opts} -> name end)
+  end
+
+  defp normalized_includes(term) do
+    Map.new(term.include, fn {name, sub_term} ->
+      {name, normalized_sub_term(sub_term, relationship_kind(term.entity, name))}
+    end)
+  end
+
+  defp normalized_order(term) do
+    ordering_keys = Enum.map(term.order_by, fn {name, _direction} -> name end)
+
+    cond do
+      term.cardinality == :count -> []
+      :id in ordering_keys -> term.order_by
+      true -> List.insert_at(term.order_by, -1, {:id, :asc})
+    end
+  end
+
+  defp normalized_sub_term(sub_term, :to_many), do: normalized_term(sub_term)
+
+  defp normalized_sub_term(sub_term, :to_one) do
+    %{sub_term | include: normalized_includes(sub_term)}
+  end
+
+  defp normalized_term(term) do
+    %{
+      term
+      | filter: Enum.sort(term.filter),
+        include: normalized_includes(term),
+        order_by: normalized_order(term)
+    }
+  end
+
+  defp order_direction!(%Placeholder{name: placeholder_name}, _key),
+    do: {:placeholder, placeholder_name}
+
+  defp order_direction!(direction, _key) when direction in @directions, do: direction
+
+  defp order_direction!(direction, key) do
+    raise ArgumentError,
+      message:
+        "invalid direction #{inspect(direction)} for attribute #{inspect(key)} - use :asc or :desc"
+  end
+
+  # A placeholder spec binds either a single ordering key or a whole spec list at execution - the build
+  # cannot tell which, and does not need to: the registered term's ordering is dead weight, since
+  # Hologram.Query.Window empties it. One entry stands for whatever arrives.
+  defp order_entries!(%Placeholder{name: placeholder_name}, _entity_type) do
+    [{{:placeholder, placeholder_name}, :asc}]
+  end
+
+  defp order_entries!(name, entity_type) when is_atom(name) do
+    [order_entry!(name, entity_type)]
+  end
+
+  defp order_entries!(spec, entity_type) when is_list(spec) do
+    Enum.map(spec, &order_entry!(&1, entity_type))
+  end
+
+  defp order_entries!(spec, _entity_type) do
+    raise ArgumentError,
+      message: "order_by spec must be an attribute name or a list, got: #{inspect(spec)}"
+  end
+
+  defp normalize_membership_values(values) do
+    Enum.map(values, fn
+      %Placeholder{name: placeholder_name} -> {:placeholder, placeholder_name}
+      value -> value
+    end)
+  end
+
+  defp order_entry!({name, direction}, entity_type) when is_atom(name) do
+    validate_attribute_name!(name, entity_type, "ordered")
+
+    {name, order_direction!(direction, name)}
+  end
+
+  defp order_entry!({%Placeholder{name: placeholder_name}, direction}, _entity_type) do
+    key = {:placeholder, placeholder_name}
+
+    {key, order_direction!(direction, key)}
+  end
+
+  defp order_entry!(%Placeholder{name: placeholder_name}, _entity_type) do
+    {{:placeholder, placeholder_name}, :asc}
+  end
+
+  defp order_entry!(name, entity_type) when is_atom(name) do
+    validate_attribute_name!(name, entity_type, "ordered")
+
+    {name, :asc}
+  end
+
+  defp order_entry!(entry, _entity_type) do
+    raise ArgumentError,
+      message:
+        "invalid order_by entry #{inspect(entry)} - use an attribute name or an {attribute, :asc | :desc} tuple"
+  end
+
+  # The offset a page produces depends on both options, so a placeholder in either makes it one too -
+  # named for whichever option it varies with, page first.
+  #
+  # THE NAME IS NOT A BINDING KEY. A leaf names the ARGUMENT a value derives from, never the value
+  # itself, which is why `offset((page - 1) * size)` written out by hand yields this same leaf, and
+  # why `filter(b: n * 2)` yields `{:b, :==, {:placeholder, :n}}`. Nothing ever turns a leaf back
+  # into a value: both tiers call the real builder with the component's real props, so the offset
+  # that executes is the computed one.
+  defp paginate_offset(%Placeholder{} = page, _size), do: page
+
+  defp paginate_offset(_page, %Placeholder{} = size), do: size
+
+  defp paginate_offset(page, size), do: (page - 1) * size
+
+  defp ordering_triple!(name, operator, operand, entity_type) do
+    validate_orderable_attribute!(name, entity_type, operator)
+
+    if is_nil(operand) or is_list(operand) or is_tuple(operand) or is_struct(operand, Range) do
+      raise ArgumentError,
+        message:
+          "invalid operand #{inspect(operand)} for operator #{inspect(operator)} on attribute #{inspect(name)}"
+    end
+
+    validate_enum_operand!(name, operand, entity_type)
+
+    {name, operator, operand}
+  end
+
+  defp predicate_triples!(name, {:in, %Range{} = range}, entity_type) do
+    predicate_triples!(name, range, entity_type)
+  end
+
+  defp predicate_triples!(name, %Range{} = range, entity_type) do
+    validate_membership_range!(range, name, entity_type)
+
+    [{name, :>=, range.first}, {name, :<=, range.last}]
+  end
+
+  defp predicate_triples!(name, %Placeholder{name: placeholder_name}, _entity_type) do
+    [{name, :==, {:placeholder, placeholder_name}}]
+  end
+
+  defp predicate_triples!(name, {operator, %Placeholder{name: placeholder_name}}, entity_type)
+       when is_atom(operator) do
+    cond do
+      operator in @equality_operators or operator in @membership_operators ->
+        [{name, operator, {:placeholder, placeholder_name}}]
+
+      operator in @ordering_operators ->
+        validate_orderable_attribute!(name, entity_type, operator)
+        [{name, operator, {:placeholder, placeholder_name}}]
+
+      true ->
+        raise_unknown_operator!(operator, name)
+    end
+  end
+
+  defp predicate_triples!(name, {:actor}, entity_type) do
+    validate_actor_attribute!(name, entity_type)
+
+    [{name, :==, {:actor}}]
+  end
+
+  defp predicate_triples!(name, {operator, {:actor}}, entity_type)
+       when operator in @equality_operators do
+    validate_actor_attribute!(name, entity_type)
+
+    [{name, operator, {:actor}}]
+  end
+
+  defp predicate_triples!(name, {operator, operand}, entity_type) when is_atom(operator) do
+    cond do
+      operator in @equality_operators ->
+        [equality_triple!(name, operator, operand)]
+
+      operator in @membership_operators ->
+        validate_membership_list!(operand, name, operator)
+        [{name, operator, normalize_membership_values(operand)}]
+
+      operator in @ordering_operators ->
+        [ordering_triple!(name, operator, operand, entity_type)]
+
+      true ->
+        raise_unknown_operator!(operator, name)
+    end
+  end
+
+  defp predicate_triples!(name, value, _entity_type) when is_tuple(value) do
+    raise ArgumentError,
+      message: "invalid filter value #{inspect(value)} for attribute #{inspect(name)}"
+  end
+
+  defp predicate_triples!(name, values, entity_type) when is_list(values) do
+    cond do
+      values == [] ->
+        raise ArgumentError,
+          message: "filter list for attribute #{inspect(name)} must not be empty"
+
+      Enum.all?(values, &constraint_tuple?/1) ->
+        Enum.flat_map(values, fn value -> predicate_triples!(name, value, entity_type) end)
+
+      Enum.all?(values, &plain_value?/1) ->
+        validate_membership_list!(values, name, :in)
+        [{name, :in, normalize_membership_values(values)}]
+
+      true ->
+        raise ArgumentError,
+          message:
+            "invalid filter list #{inspect(values)} for attribute #{inspect(name)} - use either a membership list of plain values or a list of operator tuples"
+    end
+  end
+
+  defp predicate_triples!(name, value, _entity_type), do: [{name, :==, value}]
+
+  defp plain_value?(value) do
+    not is_tuple(value) and not is_list(value) and not is_struct(value, Range)
+  end
+
+  # The two claim stages share everything but the claim they record. A second claim is refused
+  # here, where it is written - a struct carrying two authorities would have to pick one at the
+  # write, silently.
+  defp put_claim(entity, claim, stage) do
+    entity_type = entity_type!(entity, stage)
+
+    %Metadata{claim: recorded_claim} = metadata = entity.__meta__
+
+    if recorded_claim != nil do
+      raise ArgumentError,
+        message:
+          "#{inspect(entity_type)} already carries a claim (#{inspect(recorded_claim)}) - a write claims exactly one authority"
+    end
+
+    Map.put(entity, :__meta__, %Metadata{metadata | claim: claim})
+  end
+
+  # The two counter stages share everything but the sign they record. A sum that reaches zero is
+  # dropped rather than recorded: a delta of nothing is not a change, and the wire refuses one.
+  defp put_delta(entity, name, amount, sign, stage) do
+    entity_type = entity_type!(entity, stage)
+
+    validate_delta_name!(name, entity_type, stage)
+    validate_amount!(amount, stage)
+
+    %Metadata{attribute_ops: ops} = metadata = entity.__meta__
+
+    case Map.get(ops, name) do
+      # Stages apply in order: an increment after a put folds into the value, so the attribute
+      # keeps one op.
+      {:put, value} when is_integer(value) ->
+        put_attribute(entity, name, value + sign * amount)
+
+      {:put, value} ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} in #{inspect(entity_type)} carries a put value that is not an integer (#{inspect(value)}) - #{stage} cannot move it"
+
+      recorded ->
+        delta = recorded_increment(recorded) + sign * amount
+
+        recorded_ops =
+          if delta == 0, do: Map.delete(ops, name), else: Map.put(ops, name, {:increment, delta})
+
+        # The field previews the result the way a put value does - only the recorded amount is
+        # written, so the row still computes the value from whatever it holds at the write.
+        entity
+        |> Map.put(name, moved_value(entity, name, entity_type, sign * amount, stage))
+        |> Map.put(:__meta__, %Metadata{metadata | attribute_ops: recorded_ops})
+    end
+  end
+
+  defp moved_value(entity, name, entity_type, delta, stage) do
+    case Map.fetch!(entity, name) do
+      value when is_integer(value) ->
+        value + delta
+
+      nil ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} in #{inspect(entity_type)} holds nil - a counter always holds a number, so there is nothing for #{stage} to move - read the row first, or give the attribute a default"
+    end
+  end
+
+  # The two edge stages share everything but the operation they record.
+  defp put_relationship_op(entity, relationship_name, target_id, op, stage) do
+    entity_type = entity_type!(entity, stage)
+
+    validate_edge_relationship_name!(relationship_name, entity_type)
+
+    if not is_binary(target_id) do
+      raise ArgumentError,
+        message: "#{stage} takes a target id string, got: #{inspect(target_id)}"
+    end
+
+    %Metadata{relationship_ops: relationship_ops} = metadata = entity.__meta__
+
+    recorded_ops = Map.put(relationship_ops, {relationship_name, target_id}, op)
+
+    Map.put(entity, :__meta__, %Metadata{metadata | relationship_ops: recorded_ops})
+  end
+
+  defp recorded_increment(nil), do: 0
+
+  defp recorded_increment({:increment, amount}), do: amount
+
+  defp raise_unknown_operator!(operator, name) do
+    raise ArgumentError,
+      message:
+        "unknown operator #{inspect(operator)} in the filter predicate for attribute #{inspect(name)} - supported operators: :!=, :<, :<=, :==, :>, :>=, :in, :not_in"
+  end
+
+  defp reference_field_names(entity_type) do
+    entity_type
+    |> to_one_relationship_names()
+    |> Enum.map(&String.to_existing_atom("#{&1}_id"))
+  end
+
+  defp relationship_kind(entity_type, name) do
+    {_target, kind} = validate_relationship_name!(name, entity_type)
+
+    kind
+  end
+
+  defp relationship_names(entity_type) do
+    Enum.map(entity_type.__relationships__(), fn {name, _type, _opts} -> name end)
+  end
+
+  defp set_view_bound!(query, field, %Placeholder{name: placeholder_name}) do
+    term = to_term(query)
+
+    Map.replace!(term, field, {:placeholder, placeholder_name})
+  end
+
+  defp set_view_bound!(query, field, value) do
+    term = to_term(query)
+
+    if not is_integer(value) or value < 0 do
+      raise ArgumentError,
+        message: "#{field} must be a non-negative integer, got: #{inspect(value)}"
+    end
+
+    Map.replace!(term, field, value)
+  end
+
+  defp settable_names(entity_type) do
+    declared_names = Enum.map(entity_type.__attributes__(), fn {name, _type, _opts} -> name end)
+
+    Enum.sort(declared_names ++ reference_field_names(entity_type))
+  end
+
+  defp sub_term_has_clauses?(sub_term) do
+    sub_term.filter != [] or sub_term.order_by != [] or sub_term.limit != nil or
+      sub_term.offset != nil
+  end
+
+  defp system_attribute_names(entity_type) do
+    Enum.map(entity_type.__system_attributes__(), fn {name, _type, _opts} -> name end)
+  end
+
+  defp to_many_relationship_names(entity_type) do
+    entity_type.__relationships__()
+    |> Enum.filter(fn {_name, type, _opts} -> is_list(type) end)
+    |> Enum.map(fn {name, _type, _opts} -> name end)
+  end
+
+  defp to_one_relationship_names(entity_type) do
+    entity_type.__relationships__()
+    |> Enum.reject(fn {_name, type, _opts} -> is_list(type) end)
+    |> Enum.map(fn {name, _type, _opts} -> name end)
+  end
+
+  defp to_term(%__MODULE__{} = term), do: term
+
+  defp to_term(query) do
+    if Reflection.entity?(query) do
+      %__MODULE__{entity: query}
+    else
+      raise ArgumentError,
+        message:
+          "#{inspect(query)} is not an entity type module or a query term - a query starts from a module with the \"use Hologram.Entity\" directive"
+    end
+  end
+
+  # The actor leaf carries the acting user's entity id, so it compares only against names
+  # holding an entity id - any other type would compile a comparison that never matches.
+  defp validate_actor_attribute!(name, entity_type) do
+    type = attribute_type(entity_type, name)
+
+    if type != :uuid do
+      raise ArgumentError,
+        message:
+          "user_id() requires a uuid attribute - attribute #{inspect(name)} in #{inspect(entity_type)} has type #{inspect(type)}"
+    end
+  end
+
+  # increment is the general form and takes any integer - a computed amount passes through with
+  # its sign. decrement is the readable spelling for a literal move down, so an amount that is
+  # not positive is refused: decrement(:stock, -1) has no sensible reading, and increment covers
+  # it.
+  defp validate_amount!(amount, "increment") when is_integer(amount), do: :ok
+
+  defp validate_amount!(amount, "decrement") when is_integer(amount) and amount > 0, do: :ok
+
+  defp validate_amount!(amount, "increment") do
+    raise ArgumentError, message: "increment takes an integer amount, got: #{inspect(amount)}"
+  end
+
+  defp validate_amount!(amount, "decrement") do
+    raise ArgumentError,
+      message: "decrement takes a positive integer amount, got: #{inspect(amount)}"
+  end
+
+  defp validate_attribute_name!(name, entity_type, usage) do
+    attribute_names = attribute_names(entity_type)
+
+    cond do
+      name in attribute_names ->
+        :ok
+
+      name in relationship_names(entity_type) ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} is a relationship in #{inspect(entity_type)} - only attributes can be #{usage}"
+
+      true ->
+        known = Enum.map_join(attribute_names, ", ", &inspect/1)
+
+        raise ArgumentError,
+          message:
+            "unknown attribute #{inspect(name)} in #{inspect(entity_type)} - known attributes: #{known}"
+    end
+  end
+
+  defp validate_filtered_name!(name, entity_type) do
+    filterable_names = filterable_names(entity_type)
+
+    cond do
+      name in filterable_names ->
+        :ok
+
+      name in to_one_relationship_names(entity_type) ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} is a relationship in #{inspect(entity_type)} - only attributes can be filtered - filter its reference via :#{name}_id"
+
+      name in relationship_names(entity_type) ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} is a relationship in #{inspect(entity_type)} - only attributes can be filtered"
+
+      true ->
+        known = Enum.map_join(filterable_names, ", ", &inspect/1)
+
+        raise ArgumentError,
+          message:
+            "unknown attribute #{inspect(name)} in #{inspect(entity_type)} - known attributes: #{known}"
+    end
+  end
+
+  # A comparison operand on an enum is one of the values it declares, refused where it is written
+  # rather than where it is run: the database refuses an undeclared label too, but only once the
+  # statement reaches it, and by then nothing can name the values there were to choose from.
+  # A declared to-many relationship - refused where it is written, with the fix named for the
+  # names an edge stage is most often given by mistake.
+  defp validate_delta_name!(name, entity_type, stage) do
+    counter_names = counter_attribute_names(entity_type)
+    system_names = system_attribute_names(entity_type)
+
+    cond do
+      name in counter_names ->
+        :ok
+
+      name in integer_names(entity_type.__attributes__()) ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} in #{inspect(entity_type)} is optional and can hold nil - #{stage} moves attributes that always hold a number - declare it without optional: true, with a default"
+
+      name in system_names ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} is a system attribute of #{inspect(entity_type)} - it is managed automatically and can't be moved"
+
+      name in attribute_names(entity_type) ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} is a #{inspect(attribute_type(entity_type, name))} attribute of #{inspect(entity_type)} - #{stage} moves integer attributes only"
+
+      name in relationship_names(entity_type) ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} is a relationship in #{inspect(entity_type)} - #{stage} moves integer attributes only"
+
+      true ->
+        known = Enum.map_join(counter_names, ", ", &inspect/1)
+
+        raise ArgumentError,
+          message:
+            "unknown attribute #{inspect(name)} in #{inspect(entity_type)} - known counters: #{known}"
+    end
+  end
+
+  defp validate_edge_relationship_name!(name, entity_type) do
+    to_many_names = to_many_relationship_names(entity_type)
+
+    cond do
+      name in to_many_names ->
+        :ok
+
+      name in to_one_relationship_names(entity_type) ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} is a to-one relationship in #{inspect(entity_type)} - only to-many relationships hold edges - set its reference via put_attribute(:#{name}_id, id)"
+
+      name in attribute_names(entity_type) ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} is an attribute in #{inspect(entity_type)} - only to-many relationships hold edges - put it via put_attribute"
+
+      true ->
+        known = Enum.map_join(to_many_names, ", ", &inspect/1)
+
+        raise ArgumentError,
+          message:
+            "unknown relationship #{inspect(name)} in #{inspect(entity_type)} - known to-many relationships: #{known}"
+    end
+  end
+
+  defp validate_enum_operand!(name, operand, entity_type) do
+    case attribute_definition(entity_type, name) do
+      {_name, :enum, opts} ->
+        values = Keyword.fetch!(opts, :values)
+
+        if operand not in values do
+          raise ArgumentError,
+            message:
+              "#{inspect(operand)} is not a value of attribute #{inspect(name)} in #{inspect(entity_type)} - the values are #{inspect(values)}"
+        end
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp validate_membership_list!(values, name, _operator) when is_list(values) do
+    if values == [] do
+      raise ArgumentError,
+        message: "membership list for attribute #{inspect(name)} must not be empty"
+    end
+
+    Enum.each(values, fn
+      value when is_list(value) or is_tuple(value) ->
+        raise ArgumentError,
+          message:
+            "invalid membership list element #{inspect(value)} for attribute #{inspect(name)} - membership lists hold plain values"
+
+      %Range{} = value ->
+        raise ArgumentError,
+          message:
+            "invalid membership list element #{inspect(value)} for attribute #{inspect(name)} - membership lists hold plain values"
+
+      _value ->
+        :ok
+    end)
+  end
+
+  defp validate_membership_list!(operand, name, operator) do
+    raise ArgumentError,
+      message:
+        "operator #{inspect(operator)} on attribute #{inspect(name)} requires a list operand, got: #{inspect(operand)}"
+  end
+
+  defp validate_membership_range!(range, name, entity_type) do
+    type = attribute_type(entity_type, name)
+
+    if type != :integer do
+      raise ArgumentError,
+        message:
+          "range #{inspect(range)} requires an integer attribute - attribute #{inspect(name)} in #{inspect(entity_type)} has type #{inspect(type)}"
+    end
+
+    if range.step != 1 do
+      raise ArgumentError,
+        message:
+          "stepped range #{inspect(range)} for attribute #{inspect(name)} is not supported - membership ranges use step 1"
+    end
+
+    if Range.size(range) == 0 do
+      raise ArgumentError,
+        message:
+          "range #{inspect(range)} for attribute #{inspect(name)} is empty - it would match nothing"
+    end
+  end
+
+  defp validate_orderable_attribute!(name, entity_type, operator) do
+    type = attribute_type(entity_type, name)
+
+    if type not in @orderable_types do
+      raise ArgumentError,
+        message:
+          "operator #{inspect(operator)} requires an orderable attribute - attribute #{inspect(name)} in #{inspect(entity_type)} has type #{inspect(type)}, and boolean and uuid attributes have no order to compare by"
+    end
+  end
+
+  defp validate_paginate_option!(opts, key) do
+    case Keyword.fetch(opts, key) do
+      {:ok, %Placeholder{} = placeholder} ->
+        placeholder
+
+      {:ok, value} when is_integer(value) and value >= 1 ->
+        value
+
+      {:ok, value} ->
+        raise ArgumentError,
+          message: "#{key} must be a positive integer, got: #{inspect(value)}"
+
+      :error ->
+        raise ArgumentError, message: "paginate requires the #{inspect(key)} option"
+    end
+  end
+
+  # What DB.update/3 accepts as a change name - a declared attribute or a to-one reference field -
+  # refused where it is written rather than at the write, with the fix named for the mistakes a
+  # relationship invites.
+  defp validate_put_name!(name, entity_type) do
+    settable_names = settable_names(entity_type)
+
+    cond do
+      name in settable_names ->
+        :ok
+
+      name in to_one_relationship_names(entity_type) ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} is a relationship in #{inspect(entity_type)} - only attributes can be put - set its reference via :#{name}_id"
+
+      name in relationship_names(entity_type) ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} is a relationship in #{inspect(entity_type)} - only attributes can be put - add its edges via add_relationship"
+
+      name in system_attribute_names(entity_type) ->
+        raise ArgumentError,
+          message:
+            "#{inspect(name)} is a system attribute of #{inspect(entity_type)} - it is managed automatically and can't be put"
+
+      true ->
+        known = Enum.map_join(settable_names, ", ", &inspect/1)
+
+        raise ArgumentError,
+          message:
+            "unknown attribute #{inspect(name)} in #{inspect(entity_type)} - known attributes: #{known}"
+    end
+  end
+
+  defp validate_relationship_name!(name, entity_type) do
+    definitions = entity_type.__relationships__()
+
+    case Enum.find(definitions, fn {definition_name, _type, _opts} -> definition_name == name end) do
+      {_name, [target], _opts} ->
+        {target, :to_many}
+
+      {_name, target, _opts} ->
+        {target, :to_one}
+
+      nil ->
+        if name in attribute_names(entity_type) do
+          raise ArgumentError,
+            message:
+              "#{inspect(name)} is an attribute in #{inspect(entity_type)} - only relationships can be included"
+        end
+
+        relationship_names = relationship_names(entity_type)
+        known = Enum.map_join(relationship_names, ", ", &inspect/1)
+
+        raise ArgumentError,
+          message:
+            "unknown relationship #{inspect(name)} in #{inspect(entity_type)} - known relationships: #{known}"
+    end
+  end
+
+  defp validate_sub_term!(sub_term, name, target, kind) do
+    validate_sub_term_entity!(sub_term, name, target)
+
+    if sub_term.cardinality != :set do
+      raise ArgumentError,
+        message:
+          "include sub-terms take no cardinality marker - the relationship declaration governs cardinality"
+    end
+
+    if sub_term.trust do
+      raise ArgumentError,
+        message:
+          "include sub-terms take no trust mark - trust/1 goes on the query root and reads the whole query, includes and all, on the server's authority"
+    end
+
+    if kind == :to_one and sub_term_has_clauses?(sub_term) do
+      raise ArgumentError,
+        message:
+          "to-one relationship #{inspect(name)} takes no clauses - clauses apply to to-many includes"
+    end
+
+    if include_depth(sub_term) > 1 do
+      raise ArgumentError,
+        message: "including #{inspect(name)} exceeds the traversal depth limit of 2 levels"
+    end
+  end
+
+  defp validate_sub_term_entity!(%__MODULE__{entity: target}, _name, target), do: :ok
+
+  defp validate_sub_term_entity!(%__MODULE__{entity: other_entity_type}, name, target) do
+    raise ArgumentError,
+      message:
+        "include sub-builder for relationship #{inspect(name)} must return a query term for #{inspect(target)} - got a query term for #{inspect(other_entity_type)}"
+  end
+
+  defp validate_sub_term_entity!(sub_term, name, target) do
+    raise ArgumentError,
+      message:
+        "include sub-builder for relationship #{inspect(name)} must return a query term for #{inspect(target)}, got: #{inspect(sub_term)}"
+  end
+
+  defp value_placeholder_names({:placeholder, name}), do: [name]
+
+  defp value_placeholder_names(values) when is_list(values),
+    do: Enum.flat_map(values, &value_placeholder_names/1)
+
+  defp value_placeholder_names(_value), do: []
+
+  # Rendered as the struct with the fields at their default left out - a fresh term shows its
+  # entity type alone, and an include shows as the nested struct it holds. Still the literal that
+  # rebuilds the term exactly (an omitted field takes its default, and entity is never omitted),
+  # and the spelling the tests assert with, so what inspect prints is what a reader writes. Bare,
+  # five of the eight fields are at their default on every term and every sub-term, and the
+  # signal drowns.
+  defimpl Inspect do
+    import Inspect.Algebra
+
+    @impl Inspect
+    def inspect(term, opts) do
+      defaults =
+        Hologram.Query
+        |> struct()
+        |> Map.from_struct()
+
+      fields =
+        Enum.reject(
+          [
+            cardinality: term.cardinality,
+            entity: term.entity,
+            filter: term.filter,
+            include: term.include,
+            limit: term.limit,
+            offset: term.offset,
+            order_by: term.order_by,
+            trust: term.trust
+          ],
+          fn {name, value} -> value == Map.fetch!(defaults, name) end
+        )
+
+      container_doc("%Hologram.Query{", fields, "}", opts, &field_doc/2, separator: ",")
+    end
+
+    defp field_doc({name, value}, opts) do
+      concat([Atom.to_string(name), ": ", to_doc(value, opts)])
+    end
+  end
+end

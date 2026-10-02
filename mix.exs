@@ -62,7 +62,7 @@ defmodule Hologram.MixProject do
       {:benchee, "~> 1.0", only: :dev, runtime: false},
       {:benchee_markdown, "~> 0.3", only: :dev, runtime: false},
       {:credo, "~> 1.0", only: [:dev, :test], runtime: false},
-      {:decimal, "~> 3.0", only: [:dev, :test], runtime: false, override: true},
+      {:decimal, "~> 3.0", override: true},
       {:dialyxir, "~> 1.0", only: [:dev, :test], runtime: false},
       {:doctor, "~> 0.21", only: [:dev, :test], runtime: false},
       {:ecto, "~> 3.0", only: :test, runtime: false},
@@ -78,6 +78,7 @@ defmodule Hologram.MixProject do
       {:phoenix, "~> 1.7"},
       {:phoenix_pubsub, "~> 2.0"},
       {:plug_crypto, "~> 2.0"},
+      {:postgrex, "~> 0.22"},
       {:recode, "~> 0.7", only: :dev, runtime: false},
       {:sobelow, "~> 0.12", only: [:dev, :test], runtime: false},
       {:telemetry, "~> 1.0"},
@@ -130,7 +131,7 @@ defmodule Hologram.MixProject do
       description:
         "Full stack isomorphic Elixir web framework that can be used on top of Phoenix.",
       dialyzer: [
-        plt_add_apps: [:ex_unit, :iex, :mix, :wallaby],
+        plt_add_apps: [:ex_unit, :iex, :inets, :mix, :wallaby],
         plt_core_path: Path.join(["priv", "plts", "core.plt"]),
         plt_local_path: Path.join(["priv", "plts", "project.plt"])
       ],

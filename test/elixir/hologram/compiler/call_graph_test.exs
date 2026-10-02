@@ -61,6 +61,8 @@ defmodule Hologram.Compiler.CallGraphTest do
 
   @erlang_js_dir Path.join([Reflection.root_dir(), "assets", "js", "erlang"])
 
+  @runtime_js_path Path.join([Reflection.root_dir(), "assets", "js", "hologram.mjs"])
+
   @tmp_dir Reflection.tmp_dir()
 
   defp app_protocol_dispatch_types_with_analysis(graph) do
@@ -2619,13 +2621,29 @@ defmodule Hologram.Compiler.CallGraphTest do
 
     assert {:re, :import, 1} in result
 
+    # The regex engine the model and the entity port reach through a module proxy, which no
+    # client-reachable code names for the compiler to follow.
+    assert {:re, :compile, 2} in result
+    assert {:re, :run, 3} in result
+
     refute {:unicode, :characters_to_binary, 1} in result
     refute {Hologram.Router.Helpers, :asset_path, 1} in result
   end
 
   describe "list_runtime_mfas/2" do
+    # The graph the BUNDLE is derived from, which is the one the compile task feeds this: a
+    # manually ported MFA is removed before the runtime set is listed, so its Elixir body - and
+    # everything that body reaches - is not what ships. Listing from the full graph instead would
+    # measure a build that never happens: a template calling `can?`, for instance, would drag the
+    # whole server-side permission subtree (and its Postgrex and calendar types) into a set that
+    # in truth carries the JS port.
     setup %{full_call_graph: call_graph} do
-      [runtime_mfas: list_runtime_mfas(call_graph, Reflection.list_pages())]
+      runtime_call_graph =
+        call_graph
+        |> clone()
+        |> remove_manually_ported_mfas()
+
+      [runtime_mfas: list_runtime_mfas(runtime_call_graph, Reflection.list_pages())]
     end
 
     test "includes MFAs that are reachable by Elixir functions used by the runtime", %{
@@ -2687,20 +2705,22 @@ defmodule Hologram.Compiler.CallGraphTest do
       refute {Hex.Registry.Server, :versions, 2} in result
     end
 
+    # The positive artifact is a String.Chars implementation rather than an Inspect one: the
+    # runtime inspects through the JS port (`Kernel.inspect/1,2` is manually ported), so no
+    # Inspect implementation is bundled at all - verified against a built runtime bundle, which
+    # carries String.Chars.Integer and no Inspect.Integer. The Inspect refutes stay as the guard
+    # for a build where that changes.
     test "excludes Hex implementations for Inspect and String.Chars protocols", %{
       runtime_mfas: result
     } do
-      assert {Inspect.Integer, :__impl__, 1} in result
-      assert {Inspect.Integer, :inspect, 2} in result
-
-      refute {Inspect.Hex.Solver.PackageRange, :__impl__, 1} in result
-      refute {Inspect.Hex.Solver.PackageRange, :inspect, 2} in result
-
       assert {String.Chars.Integer, :__impl__, 1} in result
       assert {String.Chars.Integer, :to_string, 1} in result
 
       refute {String.Chars.Hex.Solver.PackageRange, :__impl__, 1} in result
       refute {String.Chars.Hex.Solver.PackageRange, :to_string, 1} in result
+
+      refute {Inspect.Hex.Solver.PackageRange, :__impl__, 1} in result
+      refute {Inspect.Hex.Solver.PackageRange, :inspect, 2} in result
     end
 
     test "excludes protocol implementations whose concrete type is not runtime reachable", %{
@@ -2989,12 +3009,42 @@ defmodule Hologram.Compiler.CallGraphTest do
     end
   end
 
+  # Registering an MFA here takes the transpiled original OUT of every bundle, and the client
+  # runtime is where the replacement is put in - by hand, in hologram.mjs. Miss that half and the
+  # function is simply gone: the browser answers a call to it with UndefinedFunctionError, which
+  # no Elixir test and no JavaScript test of the port itself can see, because both call the port
+  # directly rather than through the interpreter's registry.
+  #
+  # Matched over ANY whitespace between the two arguments rather than over the newline and indent
+  # the formatter happens to write: a Windows checkout reads that file with CRLF, and a run there
+  # found every one of them missing.
+  test "every manually ported Elixir MFA is defined in the client runtime" do
+    runtime_js = File.read!(@runtime_js_path)
+
+    unregistered =
+      Enum.reject(manually_ported_elixir_mfas(), fn {module, function, arity} ->
+        module_name = Regex.escape(Reflection.module_name(module))
+        function_name = Regex.escape("#{function}/#{arity}")
+
+        registration = ~r/"#{module_name}",\s*"#{function_name}",/
+
+        Regex.match?(registration, runtime_js)
+      end)
+
+    assert unregistered == []
+  end
+
   test "manually_ported_elixir_mfas/0" do
     result = manually_ported_elixir_mfas()
 
     assert is_list(result)
     assert {Kernel, :inspect, 1} in result
     assert {String, :upcase, 1} in result
+
+    assert {Hologram.Entity, :new, 1} in result
+    assert {Hologram.Entity, :new, 2} in result
+    assert {Hologram.Entity, :validate, 1} in result
+    assert {Hologram.Entity, :validate, 2} in result
   end
 
   test "module_vertices/2", %{empty_call_graph: call_graph} do

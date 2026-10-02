@@ -54,6 +54,7 @@ defmodule Mix.Tasks.Compile.Hologram do
 
   require Logger
 
+  alias Hologram.Auth.RoleGrant
   alias Hologram.Commons.PLT
   alias Hologram.Commons.SystemUtils
   alias Hologram.Compiler
@@ -61,6 +62,11 @@ defmodule Mix.Tasks.Compile.Hologram do
   alias Hologram.Compiler.CallGraph
   alias Hologram.Compiler.CompileInputs
   alias Hologram.Compiler.Tracer
+  alias Hologram.DB.Mapper
+  alias Hologram.Entity.Model
+  alias Hologram.Entity.Validator, as: EntityValidator
+  alias Hologram.Policy
+  alias Hologram.Policy.Validator, as: PolicyValidator
   alias Hologram.Reflection
 
   # How long an empty lock file is respected before it is presumed abandoned
@@ -89,11 +95,16 @@ defmodule Mix.Tasks.Compile.Hologram do
   end
 
   @doc """
-  Benchmarks: https://github.com/bartblast/hologram/blob/master/benchmarks/mix/tasks/compile.hologram/README.md
+  Benchmarks: https://github.com/bartblast/hologram/blob/master/benchmarks/elixir/mix/tasks/compile.hologram/README.md
   """
   @impl Mix.Task.Compiler
   def run(opts) do
     opts = Keyword.merge(build_default_opts(), opts)
+
+    # Positioned before the skip guards - the cheap whole-model checks must run on every
+    # invocation (including dev/test and language-server builds), while only the expensive
+    # bundle build stays behind them.
+    validate_data_model!()
 
     result =
       cond do
@@ -270,7 +281,12 @@ defmodule Mix.Tasks.Compile.Hologram do
 
       call_graph_for_runtime = build_runtime_graph(call_graph, runtime_kept?, sup)
 
-      component_modules = Compiler.list_components(new_module_info_plt)
+      # Overridable so this project's own test suite can compile: it holds components the build
+      # must refuse - the extractor's and the validators' negative fixtures - which a real app
+      # never has.
+      component_modules =
+        opts[:component_modules] || Compiler.list_components(new_module_info_plt)
+
       templatable_modules = page_modules ++ component_modules
 
       template_modules =
@@ -294,6 +310,56 @@ defmodule Mix.Tasks.Compile.Hologram do
           ir_plt,
           runtime_kept?
         )
+
+      # The derivations below read the graph without the manually ported MFAs, which a compile that
+      # kept the runtime's MFAs did not build.
+      sync_call_graph = call_graph_for_runtime || build_runtime_graph(call_graph, false, sup)
+
+      # A builder's argument names bind the consuming component's like-named declared slots, and
+      # a remote capture makes those names a cross-module contract - so a renamed argument fails
+      # the build here, every reachable consumer at once, rather than one render at a time.
+      Compiler.validate_slot_bindings!(page_modules, sync_call_graph)
+
+      # A check spells the entity operation it asks about, and a name no allow line on any
+      # entity type declares is a typo or a rename - refused here rather than answered no
+      # forever. Asked of the UNSPLIT graph, like pages_checking_permissions/2 below: the ask
+      # functions are hand-ported, so the runtime graph no longer holds the vertices whose
+      # callers this reads.
+      Compiler.validate_operations!(Reflection.list_entities(), call_graph, ir_plt)
+
+      # Asked of the UNSPLIT graph on purpose: can?/3 is manually ported, so the graph the
+      # bundles are derived from no longer holds the vertex to ask about - while the question is
+      # exactly whether the bundles reach it.
+      permission_checking_pages = Compiler.pages_checking_permissions(page_modules, call_graph)
+
+      # Derived before the graph is split, so that a component reached through a runtime MFA is
+      # still counted as one the page can reach.
+      {page_windows_plt, page_windows_plt_dump_path} =
+        page_modules
+        |> Compiler.build_page_windows(sync_call_graph, permission_checking_pages)
+        |> Compiler.build_page_windows_plt(Keyword.put(opts, :supervisor, sup))
+
+      # Derived before the split for the same reason the windows are: a query reached through a
+      # runtime MFA still names types the client holds and orders rows it sorts.
+      #
+      # TODO: the modularization work decides whether a build bakes policy rules only when some
+      # page checks permissions. If every build with a user entity bakes them, this flag goes,
+      # along with the empty-policy clause of Compiler's render_policy/2 that reads it.
+      sync_constants =
+        Compiler.build_sync_constants(
+          page_modules,
+          sync_call_graph,
+          permission_checking_pages != []
+        )
+
+      # Every component of the build, not the ones pages reach: what reads this is the renderer and
+      # the sync layer, which answer for any component that renders. Built here and loaded at boot,
+      # like the page windows - so the two registered-query validations fail the BUILD rather than
+      # the first boot, and a release starts without running the extractor at all.
+      {queries_plt, queries_plt_dump_path} =
+        component_modules
+        |> Compiler.build_queries(Reflection.list_entities())
+        |> Compiler.build_queries_plt(Keyword.put(opts, :supervisor, sup))
 
       # Which reflection functions each page can call (see Hologram.Compiler.DynamicCallGate): given
       # to every listing of pages, the kept pages' relisting included.
@@ -418,6 +484,7 @@ defmodule Mix.Tasks.Compile.Hologram do
       # config it sets is one of its inputs (see Hologram.Compiler.client_config/0): the pages carry
       # none of it.
       client_config = Compiler.client_config()
+      sync_config = Compiler.sync_config(sync_constants)
 
       runtime_entry_files_info =
         if keep_runtime_bundle?(cache.runtime, reaching_modules,
@@ -426,7 +493,8 @@ defmodule Mix.Tasks.Compile.Hologram do
              js_binding_modules: runtime_js_binding_modules,
              js_fingerprints: js_fingerprints,
              mfas: runtime_mfas,
-             static_dir: opts[:static_dir]
+             static_dir: opts[:static_dir],
+             sync_config: sync_config
            ) do
           []
         else
@@ -444,6 +512,7 @@ defmodule Mix.Tasks.Compile.Hologram do
               encode_plt,
               async_mfas,
               app_versions,
+              sync_constants,
               entry_file_opts
             )
 
@@ -523,8 +592,15 @@ defmodule Mix.Tasks.Compile.Hologram do
         read_graph: nil,
         runtime_js_binding_modules: runtime_js_binding_modules,
         runtime_mfas: runtime_mfas,
-        supervisor: sup
+        supervisor: sup,
+        sync_config: sync_config
       }
+
+      # Before the first batch, which is where live reload reloads the registries reading them.
+      dump_sync_plts([
+        {page_windows_plt, page_windows_plt_dump_path},
+        {queries_plt, queries_plt_dump_path}
+      ])
 
       dump_page_digest_plt(bundles, batch_context)
 
@@ -784,6 +860,11 @@ defmodule Mix.Tasks.Compile.Hologram do
     PLT.stop(page_digest_plt)
   end
 
+  # The page windows PLT and the queries PLT, written by every compile.
+  defp dump_sync_plts(plts_with_dump_paths) do
+    Enum.each(plts_with_dump_paths, fn {plt, dump_path} -> PLT.dump(plt, dump_path) end)
+  end
+
   # The pages graph of a compile that kept the runtime's MFAs, made once a page is left to rebuild.
   defp ensure_pages_graph(nil, _call_graph, _runtime_mfas, [], _sup), do: nil
 
@@ -843,7 +924,8 @@ defmodule Mix.Tasks.Compile.Hologram do
           client_config: context.client_config,
           js_binding_modules: context.runtime_js_binding_modules,
           mfas: context.runtime_mfas,
-          dynamic_calls: context.gate.runtime
+          dynamic_calls: context.gate.runtime,
+          sync_config: context.sync_config
         })
     end)
   end
@@ -887,6 +969,7 @@ defmodule Mix.Tasks.Compile.Hologram do
       inputs[:app_versions]
     ) and
       kept_runtime.client_config == inputs[:client_config] and
+      kept_runtime.sync_config == inputs[:sync_config] and
       not Compiler.js_inputs_changed?(
         kept_runtime.bundle_info.js_inputs,
         inputs[:js_fingerprints]
@@ -1323,6 +1406,22 @@ defmodule Mix.Tasks.Compile.Hologram do
     Mix.Dep.cached()
     |> Enum.filter(& &1.opts[:in_umbrella])
     |> Enum.map(& &1.app)
+  end
+
+  defp validate_data_model! do
+    RoleGrant.reset_resolution_cache()
+    Model.reset_caches()
+    Policy.reset_model_facts_cache()
+
+    entity_types = Reflection.list_entities()
+
+    EntityValidator.validate_model!(entity_types)
+    PolicyValidator.validate_model!(entity_types)
+
+    # The mapping value is discarded - only the fail-fast derivation checks matter here.
+    Mapper.derive!(entity_types)
+
+    :ok
   end
 
   # An empty lock file is a lock in the middle of being acquired, not an invalid one:

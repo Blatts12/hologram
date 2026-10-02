@@ -3,14 +3,28 @@ defmodule Hologram.Template.Renderer do
 
   alias Hologram.Assets.ManifestCache, as: AssetManifestCache
   alias Hologram.Assets.PageDigestRegistry
+  alias Hologram.Auth
+  alias Hologram.Auth.Context
+  alias Hologram.Auth.RoleGrant
   alias Hologram.Commons.StringUtils
   alias Hologram.Commons.Types, as: T
   alias Hologram.Compiler.Encoder
   alias Hologram.Component
+  alias Hologram.DB
+  alias Hologram.DB.QueryCache
+  alias Hologram.DB.QueryRunner
+  alias Hologram.Entity
+  alias Hologram.Entity.Validator
+  alias Hologram.Query
   alias Hologram.Reflection
   alias Hologram.Server
+  alias Hologram.Sync.Carry
   alias Hologram.Template.DOM
   alias Hologram.Template.Helpers
+
+  # Every placeholder the mount script carries, whoever fills it in - the renderer answers for
+  # most, the controller for the rest.
+  @js_placeholder_pattern ~r/\$[A-Z_]+_JS_PLACEHOLDER/
 
   # https://html.spec.whatwg.org/multipage/syntax.html#void-elements
   @void_elems ~w(area base br col embed hr img input link meta param source track wbr)
@@ -173,33 +187,75 @@ defmodule Hologram.Template.Renderer do
   end
 
   @doc """
-  Substitutes the `$SELF_ECHOES_JS_PLACEHOLDER` token in the given HTML with
-  the encoded list of actions supplied by the caller.
+  Substitutes the given placeholders with the JavaScript source each maps to, in one pass over
+  the given text.
+
+  ONE pass, so nothing a replacement carries is read as a placeholder in turn - a value holding
+  the text of another token would otherwise have that token honoured inside it, and these values
+  hold whatever a URL, a database or a component's state put there.
+
+  What an inserted value carries is neutralized for the same reason one stage further out: a
+  token inside it survives this pass untouched and would be substituted by whoever interpolates
+  next. Inserted values are JavaScript source or JSON, and in both a token can only sit inside a
+  string, where spelling its `$` as an escape leaves the string saying exactly what it said.
+
+  A token the map does not answer for is left as it was, for whoever answers for it later.
   """
-  @spec interpolate_self_echoes_js(String.t(), [Component.Action.t()]) :: String.t()
-  def interpolate_self_echoes_js(html, self_echoes) do
-    self_echoes_js = Encoder.encode_term!(self_echoes)
-    String.replace(html, "$SELF_ECHOES_JS_PLACEHOLDER", self_echoes_js)
+  @spec interpolate_js(String.t(), %{String.t() => String.t()}) :: String.t()
+  def interpolate_js(text, replacements) do
+    Regex.replace(@js_placeholder_pattern, text, fn token ->
+      case Map.fetch(replacements, token) do
+        {:ok, js} -> neutralize_js_placeholders(js)
+        :error -> token
+      end
+    end)
   end
 
   @doc """
-  Substitutes the `$SUB_RECEIPT_ADDS_JS_PLACEHOLDER` token in the given HTML with
-  the encoded list of subscription receipts supplied by the caller.
+  Substitutes the given placeholders with the JavaScript source each maps to, inside every
+  script element's text across the given tree.
   """
-  @spec interpolate_sub_receipt_adds_js(String.t(), list) :: String.t()
-  def interpolate_sub_receipt_adds_js(html, sub_receipt_adds) do
-    sub_receipt_adds_js = Encoder.encode_term!(sub_receipt_adds)
-    String.replace(html, "$SUB_RECEIPT_ADDS_JS_PLACEHOLDER", sub_receipt_adds_js)
+  @spec interpolate_js_in_tree(tree, %{String.t() => String.t()}) :: tree
+  def interpolate_js_in_tree(tree, replacements)
+
+  def interpolate_js_in_tree({:element, "script", attributes, children}, replacements) do
+    interpolated_children =
+      Enum.map(children, fn
+        {:text, text} -> {:text, interpolate_js(text, replacements)}
+        child -> interpolate_js_in_tree(child, replacements)
+      end)
+
+    {:element, "script", attributes, interpolated_children}
   end
 
+  def interpolate_js_in_tree({:element, tag_name, attributes, children}, replacements) do
+    {:element, tag_name, attributes, interpolate_js_in_tree(children, replacements)}
+  end
+
+  def interpolate_js_in_tree(nodes, replacements) when is_list(nodes) do
+    Enum.map(nodes, &interpolate_js_in_tree(&1, replacements))
+  end
+
+  def interpolate_js_in_tree(node, _replacements), do: node
+
   @doc """
-  Substitutes the `$SUB_RECEIPT_DROPS_JS_PLACEHOLDER` token in the given HTML with
-  the encoded list of subscription drops supplied by the caller.
+  Maps the mount data to the placeholder each of its values answers for.
+
+  The renderer names the mount data for the payload, where a field name is what the client reads.
+  The document path needs the same values under the tokens the page's scripts carry, and the token
+  vocabulary is this module's, since this is what leaves them in the tree.
   """
-  @spec interpolate_sub_receipt_drops_js(String.t(), list) :: String.t()
-  def interpolate_sub_receipt_drops_js(html, sub_receipt_drops) do
-    sub_receipt_drops_js = Encoder.encode_term!(sub_receipt_drops)
-    String.replace(html, "$SUB_RECEIPT_DROPS_JS_PLACEHOLDER", sub_receipt_drops_js)
+  @spec mount_replacements(%{atom => String.t()}) :: %{String.t() => String.t()}
+  def mount_replacements(mount_data) do
+    %{
+      "$ACTOR_USER_ID_JS_PLACEHOLDER" => mount_data.actor_user_id,
+      "$ASSET_MANIFEST_JS_PLACEHOLDER" => mount_data.asset_manifest,
+      "$COMPONENT_REGISTRY_JS_PLACEHOLDER" => mount_data.component_registry,
+      "$PAGE_MODULE_JS_PLACEHOLDER" => mount_data.page_module,
+      "$PAGE_PARAMS_JS_PLACEHOLDER" => mount_data.page_params,
+      "$SYNC_COUNTS_JS_PLACEHOLDER" => mount_data.sync_counts,
+      "$SYNC_ROWS_JS_PLACEHOLDER" => mount_data.sync_rows
+    }
   end
 
   @doc """
@@ -272,12 +328,14 @@ defmodule Hologram.Template.Renderer do
       iex> render_page(MyPage, %{param: "value"}, %Server{}, initial_page?: true)
       %{
         component_registry: %{"page" => %{module: MyPage, struct: %Component{state: %{a: 1, b: 2}}}},
-        html: "<div>full page content including layout</div>",
         mount_data: %{
+          actor_user_id: "123",
           asset_manifest: "{...}",
           component_registry: "Type.map([...])",
           page_module: "Type.atom(...)",
-          page_params: "Type.map([...])"
+          page_params: "Type.map([...])",
+          sync_counts: "{...}",
+          sync_rows: "{...}"
         },
         server_struct: %Server{session: %{user_id: 123}},
         tree: [{:element, "div", [{"$key", [text: "k2xq91:0"]}], [{:text, "full page content including layout"}]}]
@@ -285,18 +343,31 @@ defmodule Hologram.Template.Renderer do
   """
   @spec render_page(module, %{atom => any}, Server.t(), T.opts()) :: %{
           component_registry: %{String.t() => %{module: module, struct: Component.t()}},
-          html: String.t(),
           mount_data: %{
+            actor_user_id: String.t(),
             asset_manifest: String.t(),
             component_registry: String.t(),
             page_module: String.t(),
-            page_params: String.t()
+            page_params: String.t(),
+            sync_counts: String.t(),
+            sync_rows: String.t()
           },
           server_struct: Server.t(),
           tree: tree
         }
   def render_page(page_module, params, server_struct, opts) do
+    Context.with_actor(server_struct.user_id, fn ->
+      render_page_as_actor(page_module, params, server_struct, opts)
+    end)
+  end
+
+  # Queries evaluated during the render are filtered by the session user's policies, and the
+  # actor reaches them through the process context: prop queries run deep inside the render,
+  # with no server struct in their signatures.
+  defp render_page_as_actor(page_module, params, server_struct, opts) do
     initial_page? = opts[:initial_page?] || false
+
+    Carry.start()
 
     {page_component_struct, page_server_struct} =
       init_component(page_module, params, server_struct)
@@ -311,6 +382,8 @@ defmodule Hologram.Template.Renderer do
       |> put_page_mounted_flag_context(false)
       |> maybe_put_csrf_token_context(opts, initial_page?)
       |> maybe_put_instance_id_context(opts, initial_page?)
+      |> maybe_put_replica_identity_context(opts, initial_page?)
+      |> put_user_context()
 
     {initial_tree, initial_component_registry, final_server_struct} =
       render_page_inside_layout(
@@ -332,39 +405,55 @@ defmodule Hologram.Template.Renderer do
         %{module: page_module, struct: page_component_struct_with_emitted_context_after_rendering}
       )
 
-    # `$SELF_ECHOES_JS_PLACEHOLDER` is intentionally left unsubstituted. Its value depends on the
-    # post-render `server.broadcasts`, which is a `Hologram.Realtime` concern - keeping the renderer
-    # Realtime-agnostic means the controller supplies it after `Realtime.get_self_echoes/1`, into
-    # the HTML through `interpolate_self_echoes_js/2` and into the navigation payload as a field.
+    # `$SELF_ECHOES_JS_PLACEHOLDER` is intentionally left unsubstituted, along with the two
+    # sub-receipt tokens. Their values depend on the post-render `server.broadcasts`, which is a
+    # `Hologram.Realtime` concern - keeping the renderer Realtime-agnostic means the controller
+    # substitutes them, into the tree it prints and into the navigation payload as fields.
+
+    # The rows this render read, and who read them - both spelled as JSON rather than as the
+    # boxed terms the rest of the mount data carries, because both are read by the data layer
+    # rather than by transpiled code: the rows go through the same ingest a frame does, and the
+    # acting user is what binds the actor predicates of the queries the client re-runs.
+    # Gathered first, because it answers what the render ASKED rather than what it read: a
+    # permission check reads no rows, so the rows behind its answer are looked up once the
+    # questions are all in - and they join what the page carries like any other rows.
+    Carry.take_grant_scopes()
+    |> Auth.carried_grants()
+    |> Carry.collect()
 
     component_registry_for_client = hollow_props(component_registry_with_page_struct)
 
     # The values a mount reads, grouped because they travel together. The HTML projection inlines
-    # all four, since a loaded document has no other channel for them. A navigation carries three of
-    # them as payload fields instead - not the asset manifest, which is a global the initial
+    # all seven, since a loaded document has no other channel for them. A navigation carries six
+    # of them as payload fields instead - not the asset manifest, which is a global the initial
     # document sets once and a navigation therefore already has.
+    #
+    # Encoded through the CLIENT encoder, which strips server-only attribute values: the same page
+    # served either way must not say more one way than the other.
+    #
+    # The rows and counts are escaped for the SCRIPT ELEMENT they are printed into, not only for
+    # JSON: a row holds whatever was written to the database, and a `</script>` in a string ends
+    # the element around it whatever the JavaScript is doing - the HTML parser reads the tag before
+    # the JavaScript engine reads anything at all. `:html_safe` spells the `<` as an escape, which
+    # is the same string to a JSON reader and nothing to an HTML one.
     mount_data_js = %{
+      actor_user_id: Jason.encode!(server_struct.user_id, escape: :html_safe),
       asset_manifest: AssetManifestCache.get_manifest_js(),
-      component_registry: Encoder.encode_term!(component_registry_for_client),
-      page_module: Encoder.encode_term!(page_module),
-      page_params: Encoder.encode_term!(params)
+      component_registry: Encoder.encode_client_term!(component_registry_for_client),
+      page_module: Encoder.encode_client_term!(page_module),
+      page_params: Encoder.encode_client_term!(params),
+      sync_counts: Jason.encode!(Carry.take_counts(), escape: :html_safe),
+      sync_rows: Jason.encode!(Carry.take(), escape: :html_safe)
     }
-
-    html_with_interpolated_js =
-      initial_tree
-      |> print_dom()
-      |> String.replace("$ASSET_MANIFEST_JS_PLACEHOLDER", mount_data_js.asset_manifest)
-      |> String.replace("$COMPONENT_REGISTRY_JS_PLACEHOLDER", mount_data_js.component_registry)
-      |> String.replace("$PAGE_MODULE_JS_PLACEHOLDER", mount_data_js.page_module)
-      |> String.replace("$PAGE_PARAMS_JS_PLACEHOLDER", mount_data_js.page_params)
 
     # The tree keeps its placeholders. A navigation carries the mount data beside the tree rather
     # than inside it, so nothing on that path ever substitutes them - and folding the state into a
     # script element's text would only mean escaping encoder output into the tree's encoding and
-    # unescaping it again on arrival.
+    # unescaping it again on arrival. The document path substitutes them into the tree it prints,
+    # which is the caller's to do, since only the caller holds the Realtime values that go in the
+    # same pass.
     %{
       component_registry: component_registry_with_page_struct,
-      html: html_with_interpolated_js,
       mount_data: mount_data_js,
       server_struct: final_server_struct,
       tree: initial_tree
@@ -401,6 +490,7 @@ defmodule Hologram.Template.Renderer do
       |> cast_props(module)
       |> inject_props_from_context(module, env.context)
       |> inject_default_prop_values(module)
+      |> inject_props_from_query(module)
       |> validate_props(module, env.parent_module)
 
     if has_cid_prop?(props) do
@@ -805,12 +895,46 @@ defmodule Hologram.Template.Renderer do
   defp filter_allowed_props(props_dom, module) do
     registered_prop_names =
       module.__props__()
-      |> Enum.reject(fn {_name, _type, opts} -> opts[:from_context] end)
+      |> Enum.reject(fn {_name, _type, opts} -> opts[:from_context] || opts[:from_query] end)
       |> Enum.map(fn {name, _type, _opts} -> to_string(name) end)
 
     allowed_prop_names = ["cid" | registered_prop_names]
 
     Enum.filter(props_dom, fn {name, _value_dom} -> name in allowed_prop_names end)
+  end
+
+  defp from_query_arg!(module, prop_name, nil, _props) do
+    raise ArgumentError,
+      message:
+        "from_query capture for prop #{inspect(prop_name)} in #{inspect(module)} has an argument position no clause names - it cannot bind a prop"
+  end
+
+  defp from_query_arg!(module, prop_name, param_name, props) do
+    case Map.fetch(props, param_name) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        raise ArgumentError,
+          message:
+            "from_query for prop #{inspect(prop_name)} in #{inspect(module)} binds argument #{inspect(param_name)} - no like-named prop is set"
+    end
+  end
+
+  defp from_query_args!(_module, _prop_name, capture, _props) when is_function(capture, 0) do
+    []
+  end
+
+  defp from_query_args!(module, prop_name, _capture, props) do
+    param_names = QueryCache.prop_params(module, prop_name)
+
+    if param_names == nil do
+      raise ArgumentError,
+        message:
+          "no registered params for from_query prop #{inspect(prop_name)} in #{inspect(module)} - the query cache holds no entry for it"
+    end
+
+    Enum.map(param_names, &from_query_arg!(module, prop_name, &1, props))
   end
 
   defp has_cid_prop?(props) do
@@ -881,6 +1005,29 @@ defmodule Hologram.Template.Renderer do
     Map.merge(props, props_from_context)
   end
 
+  # Runs after the other prop sources - a parameterized query capture binds
+  # like-named props, which template values, context, and defaults supply.
+  # Every query reads its arguments from the props the component was GIVEN, never from the
+  # accumulator - so what one query answers can never reach another's arguments, and the order
+  # these run in cannot change what any of them returns. The build refuses such a binding
+  # outright; this is the same rule holding by construction rather than by check.
+  defp inject_props_from_query(props, module) do
+    module.__props__()
+    |> Enum.filter(fn {_name, _type, opts} -> opts[:from_query] end)
+    |> Enum.reduce(props, fn {name, _type, opts}, acc ->
+      Map.put(acc, name, run_prop_query!(module, name, opts[:from_query], props))
+    end)
+  end
+
+  # A `$` inside an inserted value cannot begin a token once it is spelled as an escape, and the
+  # string it sits in says the same thing either way: `\u0024` is `$` to a JSON reader and to a
+  # JavaScript one alike. Only the `$` moves - the rest of the token is ordinary text.
+  defp neutralize_js_placeholders(js) do
+    Regex.replace(@js_placeholder_pattern, js, fn <<?$, rest::binary>> ->
+      "\\u0024" <> rest
+    end)
+  end
+
   defp invalid_dynamic_tag_value_message(value) do
     "dynamic tag expression must evaluate to a component module or an HTML tag name string, got: #{inspect(value)}"
   end
@@ -891,7 +1038,7 @@ defmodule Hologram.Template.Renderer do
 
     Component.put_context(
       page_component_struct,
-      {Hologram.Runtime, :csrf_token},
+      {Hologram, :csrf_token},
       csrf_token
     )
   end
@@ -907,12 +1054,29 @@ defmodule Hologram.Template.Renderer do
 
     Component.put_context(
       page_component_struct,
-      {Hologram.Runtime, :instance_id},
+      {Hologram, :instance_id},
       instance_id
     )
   end
 
   defp maybe_put_instance_id_context(page_component_struct, _opts, false) do
+    page_component_struct
+  end
+
+  defp maybe_put_replica_identity_context(page_component_struct, opts, true) do
+    replica_id =
+      opts[:replica_id] || raise ArgumentError, "replica_id is required for initial page requests"
+
+    replica_token =
+      opts[:replica_token] ||
+        raise ArgumentError, "replica_token is required for initial page requests"
+
+    page_component_struct
+    |> Component.put_context({Hologram, :replica_id}, replica_id)
+    |> Component.put_context({Hologram, :replica_token}, replica_token)
+  end
+
+  defp maybe_put_replica_identity_context(page_component_struct, _opts, false) do
     page_component_struct
   end
 
@@ -994,7 +1158,7 @@ defmodule Hologram.Template.Renderer do
   defp put_initial_page_flag_context(page_component_struct, initial_page?) do
     Component.put_context(
       page_component_struct,
-      {Hologram.Runtime, :initial_page?},
+      {Hologram, :initial_page?},
       initial_page?
     )
   end
@@ -1002,7 +1166,7 @@ defmodule Hologram.Template.Renderer do
   defp put_page_digest_context(page_component_struct, page_digest) do
     Component.put_context(
       page_component_struct,
-      {Hologram.Runtime, :page_digest},
+      {Hologram, :page_digest},
       page_digest
     )
   end
@@ -1010,7 +1174,7 @@ defmodule Hologram.Template.Renderer do
   defp put_page_module_context(page_component_struct, page_module) do
     Component.put_context(
       page_component_struct,
-      {Hologram.Runtime, :page_module},
+      {Hologram, :page_module},
       page_module
     )
   end
@@ -1018,14 +1182,44 @@ defmodule Hologram.Template.Renderer do
   defp put_page_mounted_flag_context(page_component_struct, page_mounted?) do
     Component.put_context(
       page_component_struct,
-      {Hologram.Runtime, :page_mounted?},
+      {Hologram, :page_mounted?},
       page_mounted?
     )
+  end
+
+  # The row is handed over already carrying the sentinel, so the server-rendered HTML and the
+  # client re-render agree on framework-delivered rows.
+  defp put_user_context(page_component_struct) do
+    user =
+      RoleGrant.user_entity()
+      |> read_session_user(Auth.user_id())
+      |> Entity.strip_server_only_deep()
+
+    Component.put_context(page_component_struct, {Hologram, :user}, user)
   end
 
   defp raise_invalid_spread_value(value) do
     raise ArgumentError,
       message: "spread value must be a map or a keyword list, got: #{inspect(value)}"
+  end
+
+  # The session user's row, read through the policied path - the framework grants itself
+  # no bypass, so the value is the row AS VISIBLE to that user: nil when the user entity's
+  # read rules deny it (or none matches the own row), nil when anonymous, nil when no user
+  # entity is designated. A session user id that is not a canonical entity id also yields
+  # nil - the session's user_id keeps its wider latitude for apps not using the data layer.
+  defp read_session_user(nil, _user_id), do: nil
+
+  defp read_session_user(user_entity, user_id) do
+    if Validator.attribute_value_valid?(user_id, :uuid) do
+      term =
+        user_entity
+        |> Query.filter(id: user_id)
+        |> Query.one()
+        |> Query.normalize()
+
+      QueryRunner.run_policied(term, DB.mapping(), user_id)
+    end
   end
 
   # Naming the template the component was rendered from is what turns the error into something
@@ -1135,6 +1329,33 @@ defmodule Hologram.Template.Renderer do
     end)
     |> Enum.map(&render_tree_attribute/1)
     |> Enum.reject(&is_nil/1)
+  end
+
+  defp run_prop_query!(module, prop_name, capture, props) do
+    args = from_query_args!(module, prop_name, capture, props)
+
+    term =
+      capture
+      |> apply(args)
+      |> Query.normalize()
+
+    result =
+      term
+      |> QueryRunner.run_policied(DB.mapping(), Auth.user_id())
+      |> Entity.strip_server_only_deep()
+
+    # Gathered as the prop resolves, so the client is handed the rows this render read - which is
+    # what lets its own first render answer the same query from its own database rather than from
+    # a value passed down beside it.
+    Carry.collect(result)
+
+    # A count has no rows behind it, so carried rows cannot re-derive one - the number itself is
+    # handed over, and the client holds it until its own database is complete enough to count.
+    if is_integer(result) do
+      Carry.collect_count(module, prop_name, args, result)
+    end
+
+    result
   end
 
   defp spread_entries(value)

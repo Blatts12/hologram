@@ -1,9 +1,11 @@
 alias Hologram.Assets.ManifestCache, as: AssetManifestCache
 alias Hologram.Assets.PageDigestRegistry
 alias Hologram.Assets.PathRegistry, as: AssetPathRegistry
+alias Hologram.DB.QueryCache
 alias Hologram.LiveReload
 alias Hologram.Reflection
 alias Hologram.Router.PageModuleResolver
+alias Hologram.Sync.PageWindows, as: SyncPageWindows
 
 # Create tmp dir if it doesn't exist yet.
 File.mkdir_p!(Reflection.tmp_dir())
@@ -20,7 +22,26 @@ exclude_opts =
     {:win32, _name} -> [:skip_on_windows]
   end
 
+# Make OTP's :cover available (tools app) - the extractor tests exercise
+# cover-compiled modules, and the reference must resolve at test compile time.
+Mix.ensure_application!(:tools)
+
 ExUnit.start(exclude: exclude_opts)
+
+# Boot the test database: server connectivity check (fail fast with instructions), database
+# creation when absent, Hologram schema drop (the suite starts virgin). Positioned after
+# ExUnit.start and before the pool boots - the drop guard recognizes the test env by the
+# running ExUnit server.
+Hologram.Test.DatabaseBootstrap.run!()
+
+# Boot the database gateway for the whole suite with a per-process ownership pool, so that
+# every test process transparently gets its own connection. Positioned after ExUnit.start,
+# because environment detection recognizes the test env by the running ExUnit server.
+{:ok, _database_pid} = Hologram.DB.start_link(pool: DBConnection.Ownership)
+
+# Create the fixture schema layout from scratch: reconciliation claims the virgin database
+# and converges it to the fixture entity model - the suite is auto-sync's first consumer.
+Hologram.DB.SchemaReconciler.reconcile(Hologram.DB.reconciliation_context())
 
 Mox.defmock(AssetManifestCacheMock, for: AssetManifestCache)
 Application.put_env(:hologram, :asset_manifest_cache_impl, AssetManifestCacheMock)
@@ -36,3 +57,9 @@ Application.put_env(:hologram, :page_module_resolver_impl, PageModuleResolverMoc
 
 Mox.defmock(PageDigestRegistryMock, for: PageDigestRegistry)
 Application.put_env(:hologram, :page_digest_registry_impl, PageDigestRegistryMock)
+
+Mox.defmock(SyncPageWindowsMock, for: SyncPageWindows)
+Application.put_env(:hologram, :sync_page_windows_impl, SyncPageWindowsMock)
+
+Mox.defmock(QueryCacheMock, for: QueryCache)
+Application.put_env(:hologram, :query_cache_impl, QueryCacheMock)

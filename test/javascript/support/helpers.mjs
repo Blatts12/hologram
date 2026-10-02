@@ -48,7 +48,7 @@ export * as sinon from "../../../assets/node_modules/sinon/pkg/sinon-esm.js";
 export {h as vnode} from "../../../assets/js/vendor/snabbdom/build/index.js";
 
 export const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 // What a boxed error names itself: the exception module and what it says about
 // itself. Its message carries the whole report a browser prints for an error
@@ -1180,6 +1180,16 @@ export function putState(component, state) {
   const newState = Erlang_Maps["merge/2"](oldState, state);
 
   return Erlang_Maps["put/3"](Type.atom("state"), newState, component);
+}
+
+export function refuteBoxedStrictEqual(left, right) {
+  if (Interpreter.isStrictlyEqual(left, right)) {
+    const inspectLeft = Interpreter.inspect(left);
+    const inspectRight = Interpreter.inspect(right);
+    const failMessage = `expected (boxed) ${inspectLeft} to not strictly equal (boxed) ${inspectRight}`;
+
+    assert.fail(failMessage);
+  }
 }
 
 export function registerWebApis() {

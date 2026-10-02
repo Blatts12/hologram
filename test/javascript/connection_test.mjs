@@ -11,6 +11,7 @@ import Connection from "../../assets/js/connection.mjs";
 import GlobalRegistry from "../../assets/js/global_registry.mjs";
 import Serializer from "../../assets/js/serializer.mjs";
 import Type from "../../assets/js/type.mjs";
+import Utils from "../../assets/js/utils.mjs";
 
 defineRuntimeGlobals();
 registerWebApis();
@@ -620,10 +621,10 @@ describe("Connection", () => {
   });
 
   describe("sendRequest()", () => {
-    let cryptoStub, opts;
+    let opts, uuidStub;
 
     beforeEach(() => {
-      cryptoStub = sinon.stub(crypto, "randomUUID").returns("mock-uuid");
+      uuidStub = sinon.stub(Utils, "uuidv7").returns("mock-uuid");
 
       opts = {
         onSuccess: sinon.spy(),
@@ -633,7 +634,7 @@ describe("Connection", () => {
     });
 
     afterEach(() => {
-      cryptoStub.restore();
+      uuidStub.restore();
     });
 
     it("creates pending request and sends message", () => {

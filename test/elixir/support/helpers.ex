@@ -13,6 +13,10 @@ defmodule Hologram.Test.Helpers do
   alias Hologram.Compiler.Encoder
   alias Hologram.Compiler.IR
   alias Hologram.Component
+  alias Hologram.DB.Codec
+  alias Hologram.DB.Connection
+  alias Hologram.DB.Mapper
+  alias Hologram.Entity
   alias Hologram.Realtime
   alias Hologram.Server
   alias Hologram.Template.Parser
@@ -139,6 +143,28 @@ defmodule Hologram.Test.Helpers do
   end
 
   @doc """
+  Writes a global role grant row directly, for tests needing a grant the public surface does not create.
+  """
+  @spec insert_global_grant(String.t(), atom) :: :ok
+  def insert_global_grant(user_id, role) do
+    insert_sql =
+      ~s|INSERT INTO "hologram_data"."hologram_role_grant" | <>
+        ~s|("id", "user_id", "role", "created_at", "updated_at", "$revisions") | <>
+        ~s|VALUES ($1, $2, $3::"hologram_data"."hologram_role_grant_role_$enum", $4, $4, '{}')|
+
+    params = [
+      Codec.encode(Entity.generate_id(), :uuid),
+      Codec.encode(user_id, :uuid),
+      Codec.encode(role, :enum),
+      DateTime.utc_now()
+    ]
+
+    {:ok, _result} = Connection.query(insert_sql, params)
+
+    :ok
+  end
+
+  @doc """
   Encodes Elixir source code to JavaScript source code.
 
   ## Examples
@@ -167,6 +193,33 @@ defmodule Hologram.Test.Helpers do
   @spec process_name_registered?(atom) :: boolean
   def process_name_registered?(name) do
     name in Process.registered()
+  end
+
+  @doc """
+  Sets the given `:hologram` options for the length of the test and puts back what was there.
+
+  Merged into whatever is already configured rather than replacing it, since one key holds the
+  options of a whole area and a test means to change one of them. Restored on the way out to
+  exactly what it was, which includes deleting it when nothing was configured to begin with -
+  `Application.delete_env/2` alone would take a configured value with it.
+  """
+  @spec put_app_env(atom, keyword) :: :ok
+  def put_app_env(key, options) do
+    previous = Application.fetch_env(:hologram, key)
+
+    merged =
+      :hologram
+      |> Application.get_env(key, [])
+      |> Keyword.merge(options)
+
+    Application.put_env(:hologram, key, merged)
+
+    ExUnit.Callbacks.on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:hologram, key, value)
+        :error -> Application.delete_env(:hologram, key)
+      end
+    end)
   end
 
   @doc """
@@ -243,6 +296,46 @@ defmodule Hologram.Test.Helpers do
   end
 
   @doc """
+  Gives the row of the given type with the given id the given creation time, and returns :ok.
+
+  The spelling for a test whose subject is an ORDER: two rows created a moment apart carry the same
+  created_at wherever the system clock ticks coarsely - about every 16 ms on Windows - which leaves
+  the order they are read in undefined rather than merely unasserted.
+  """
+  @spec set_created_at(module, String.t(), DateTime.t()) :: :ok
+  def set_created_at(entity_type, id, created_at) do
+    statement =
+      ~s|UPDATE "hologram_data"."#{Mapper.table_name(entity_type)}" | <>
+        ~s|SET "created_at" = $1 WHERE "id" = $2|
+
+    {:ok, _result} =
+      Connection.query(statement, [
+        Codec.encode(created_at, :datetime),
+        Codec.encode(id, :uuid)
+      ])
+
+    :ok
+  end
+
+  @doc """
+  Writes the given per-column revisions onto a row directly, for a test that needs a revision
+  standing in a row before a write would stamp one.
+
+  The revisions go as a MAP - a JSON string parameter would be encoded as a jsonb string scalar
+  rather than an object, and would read back as the binary it was written from.
+  """
+  @spec set_revisions(module, String.t(), map) :: :ok
+  def set_revisions(entity_type, id, revisions) do
+    statement =
+      ~s|UPDATE "hologram_data"."#{Mapper.table_name(entity_type)}" | <>
+        ~s|SET "$revisions" = $1 WHERE "id" = $2|
+
+    {:ok, _result} = Connection.query(statement, [revisions, Codec.encode(id, :uuid)])
+
+    :ok
+  end
+
+  @doc """
   Generates a fresh session id, subscribes the calling process to its
   framework-private announce topic, and returns the id so the caller can build
   matching `%Server{session_id: id}` fixtures.
@@ -254,6 +347,22 @@ defmodule Hologram.Test.Helpers do
     Phoenix.PubSub.subscribe(Hologram.PubSub, announce_topic)
 
     id
+  end
+
+  @doc """
+  Returns the field types of the given entity type's t/0, as a map of field name to the type's source form.
+
+  The type is read back from the module's BEAM file, so the entity type must be one compiled to
+  disk - a module defined inside a test function carries no readable type chunk.
+  """
+  @spec struct_field_types(module) :: %{atom => String.t()}
+  def struct_field_types(entity_type) do
+    {:ok, [type: type]} = Code.Typespec.fetch_types(entity_type)
+
+    {:"::", _meta, [_name, {:%, _struct_meta, [_module, {:%{}, _map_meta, fields}]}]} =
+      Code.Typespec.type_to_quoted(type)
+
+    Map.new(fields, fn {name, field_type} -> {name, Macro.to_string(field_type)} end)
   end
 
   @doc """

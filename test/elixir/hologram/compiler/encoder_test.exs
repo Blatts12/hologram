@@ -7,6 +7,7 @@ defmodule Hologram.Compiler.EncoderTest do
   alias Hologram.Compiler.Context
   alias Hologram.Compiler.IR
   alias Hologram.Reflection
+  alias Hologram.Test.Fixtures.Entity.Module15
 
   # for <<x <- <<1, 2>>>>, do: x
   @bitstring_generator_comprehension_ir %IR.Comprehension{
@@ -4535,6 +4536,37 @@ defmodule Hologram.Compiler.EncoderTest do
     test "escapes what a script element cannot carry raw" do
       assert encode_as_string(~S|a"b\c</script>| <> "\n\r" <> <<0>>) ==
                ~S|"a\"b\\c\u{3C}/script>\n\r\u{0}"|
+    end
+  end
+
+  describe "encode_client_term!/1" do
+    test "replaces server-only attribute values with the sentinel" do
+      entity = %Module15{
+        id: "test-id-1",
+        label: "Report",
+        secret_note: "note_secret_v9",
+        token: "tok_W7pL"
+      }
+
+      expected =
+        normalize_newlines("""
+        Type.map([[Type.atom("__meta__"), Type.map([[Type.atom("__struct__"), Type.atom("Elixir.Hologram.Entity.Metadata")], [Type.atom("attribute_ops"), Type.map([])], [Type.atom("claim"), Type.atom("nil")], [Type.atom("relationship_ops"), Type.map([])], [Type.atom("revisions"), Type.map([])], [Type.atom("stamp"), Type.atom("nil")]])], [Type.atom("__struct__"), Type.atom("Elixir.Hologram.Test.Fixtures.Entity.Module15")], [Type.atom("created_at"), Type.atom("nil")], [Type.atom("id"), Type.bitstring("test-id-1")], [Type.atom("label"), Type.bitstring("Report")], [Type.atom("secret_note"), Type.map([[Type.atom("__struct__"), Type.atom("Elixir.Hologram.Entity.ServerOnly")], [Type.atom("attribute"), Type.atom("secret_note")]])], [Type.atom("token"), Type.map([[Type.atom("__struct__"), Type.atom("Elixir.Hologram.Entity.ServerOnly")], [Type.atom("attribute"), Type.atom("token")]])], [Type.atom("updated_at"), Type.atom("nil")]])\
+        """)
+
+      encoded = encode_client_term!(entity)
+
+      assert encoded == expected
+
+      # Guards the security property against an expected-string regeneration that copies in a
+      # secret the strip stopped producing.
+      refute String.contains?(encoded, "note_secret_v9")
+      refute String.contains?(encoded, "tok_W7pL")
+    end
+
+    test "encodes a term holding no entity structs identically to encode_term!/1" do
+      term = %{a: [1, {:b, "c"}]}
+
+      assert encode_client_term!(term) == encode_term!(term)
     end
   end
 
