@@ -175,6 +175,8 @@ export default class Type {
         return Type.#encodeAnonymousFunctionTypeMapKey(term);
 
       case "atom":
+        return Type.#encodeAtomMapKey(term);
+
       case "float":
       case "integer":
         return Type.#encodePrimitiveTypeMapKey(term);
@@ -553,6 +555,25 @@ export default class Type {
       .join(",");
 
     return "map(" + itemsStr + ")";
+  }
+
+  // An atom's map key is fixed by its value, and a render asks for the same handful of atoms
+  // thousands of times - every vars map, every props map and every context map is keyed by them.
+  // So the key is built once per atom rather than once per lookup. Bounded by the app's atoms.
+  //
+  // Only atoms are held this way. A float or an integer key is drawn from a range nothing bounds,
+  // so a cache of those grows with the data rather than with the program.
+  static #atomMapKeys = new Map();
+
+  static #encodeAtomMapKey(term) {
+    let mapKey = Type.#atomMapKeys.get(term.value);
+
+    if (mapKey === undefined) {
+      mapKey = `atom(${term.value})`;
+      Type.#atomMapKeys.set(term.value, mapKey);
+    }
+
+    return mapKey;
   }
 
   static #encodePrimitiveTypeMapKey(term) {
