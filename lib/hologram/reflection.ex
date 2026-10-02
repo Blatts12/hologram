@@ -1267,7 +1267,6 @@ defmodule Hologram.Reflection do
         [lib_dir, "ebin", "Elixir.*.beam"]
         |> Path.join()
         |> Path.wildcard()
-        |> Enum.map(&String.to_charlist/1)
     end
   end
 
@@ -1293,11 +1292,13 @@ defmodule Hologram.Reflection do
   # Elixir-named beams in each application's ebin directory, in directory order. Each beam's export
   # table is read from the file, in concurrent tasks, and the module name is taken from the beam: no
   # module is loaded, no name is turned into an atom, and the code server is asked once per
-  # application (for its lib dir), not per module.
+  # application (for its lib dir), not per module. The paths stay binaries until each task reads its
+  # beam: as charlists they take twenty times the words, which kills a caller with a capped heap,
+  # such as an SSE stream process (see Hologram.Realtime.SSE).
   defp list_modules_exporting(apps, function, arity) do
     apps
     |> Enum.flat_map(&list_app_elixir_beam_paths/1)
-    |> TaskUtils.map_concurrently(&module_exporting(&1, function, arity))
+    |> TaskUtils.map_concurrently(&module_exporting(String.to_charlist(&1), function, arity))
     |> Enum.reject(&is_nil/1)
   end
 
