@@ -123,7 +123,9 @@ defmodule Hologram.DB do
   It connects to the "postgres" maintenance database, outside the pool, because CREATE
   DATABASE cannot run inside a transaction and the target may not exist yet. So it works
   before start_link/1, and the configured user needs the CREATEDB privilege only when the
-  database is missing.
+  database is missing. It starts the :postgrex application itself, so a task can call it
+  with the app not started: `mix run --no-start -e 'Hologram.DB.create_database_if_missing!()'`.
+  Starting the app first would not work, because the pool fails on the missing database.
 
   Returns :created or :already_exists. A database created by another process between the
   check and the create counts as :already_exists. Raises DBConnection.ConnectionError when
@@ -131,6 +133,8 @@ defmodule Hologram.DB do
   """
   @spec create_database_if_missing!(String.t()) :: :created | :already_exists
   def create_database_if_missing!(database \\ Config.connection_opts()[:database]) do
+    {:ok, _apps} = Application.ensure_all_started(:postgrex)
+
     {:ok, maintenance_pid} =
       [database: "postgres"]
       |> Config.connection_opts()
