@@ -117,6 +117,38 @@ defmodule Hologram.DB do
   end
 
   @doc """
+  Creates the given database on the configured server when it does not exist yet. The name
+  defaults to the configured database of the current environment.
+
+  It connects to the "postgres" maintenance database, outside the pool, because CREATE
+  DATABASE cannot run inside a transaction and the target may not exist yet. So it works
+  before start_link/1, and the configured user needs the CREATEDB privilege only when the
+  database is missing.
+
+  Returns :created or :already_exists. A database created by another process between the
+  check and the create counts as :already_exists. Raises DBConnection.ConnectionError when
+  the server cannot be reached.
+  """
+  @spec create_database_if_missing!(String.t()) :: :created | :already_exists
+  def create_database_if_missing!(database \\ Config.connection_opts()[:database]) do
+    {:ok, maintenance_pid} =
+      [database: "postgres"]
+      |> Config.connection_opts()
+      |> Postgrex.start_link()
+
+    try do
+      case Postgrex.query!(maintenance_pid, "SELECT 1 FROM pg_database WHERE datname = $1", [
+             database
+           ]) do
+        %{rows: []} -> create_database!(maintenance_pid, database)
+        _result -> :already_exists
+      end
+    after
+      GenServer.stop(maintenance_pid)
+    end
+  end
+
+  @doc """
   Deletes the entity of the given type with the given id together with its own outgoing
   to-many edges, in one transaction. An incoming reference from another entity - a
   to-one reference column or an edge pointing at this entity - restricts the delete,
@@ -584,6 +616,20 @@ defmodule Hologram.DB do
           message:
             "cannot read a query term containing placeholders - placeholder #{inspect(name)} has no value: directly executed queries embed concrete runtime values, placeholders exist only in compiler-registered queries"
     end
+  end
+
+  defp create_database!(maintenance_pid, database) do
+    quoted_database = Mapper.quote_identifier(database)
+    Postgrex.query!(maintenance_pid, "CREATE DATABASE #{quoted_database}", [])
+
+    :created
+  rescue
+    error in Postgrex.Error ->
+      if error.postgres[:code] == :duplicate_database do
+        :already_exists
+      else
+        reraise error, __STACKTRACE__
+      end
   end
 
   # One line per violation, always bulleted - the shape Validator.error_message/3 set, and the

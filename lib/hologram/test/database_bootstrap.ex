@@ -6,8 +6,8 @@ defmodule Hologram.Test.DatabaseBootstrap do
   # TODO: consider promoting to public API (docs, stable surface), so that client apps
   # can bootstrap their own test databases with it.
 
+  alias Hologram.DB
   alias Hologram.DB.Config
-  alias Hologram.DB.Mapper
 
   @drop_statements [
     ~s(DROP SCHEMA IF EXISTS "hologram_system" CASCADE),
@@ -70,34 +70,18 @@ defmodule Hologram.Test.DatabaseBootstrap do
     GenServer.stop(connection_pid)
   end
 
+  # The maintenance database always exists, so its existence query doubles as the server
+  # connectivity check.
   defp ensure_database!(database_opts, database) do
-    {:ok, connection_pid} =
-      database_opts
-      |> connection_opts("postgres")
-      |> Postgrex.start_link()
-
-    database_existence_query = "SELECT 1 FROM pg_database WHERE datname = $1"
-
-    # The maintenance database always exists, so this query doubles as the server
-    # connectivity check.
-    case Postgrex.query(connection_pid, database_existence_query, [database]) do
-      {:ok, %{rows: []}} ->
-        quoted_database = Mapper.quote_identifier(database)
-        Postgrex.query!(connection_pid, "CREATE DATABASE #{quoted_database}", [])
-
-      {:ok, _result} ->
-        :ok
-
-      # The reason carried here is always the pool's :queue_timeout, whatever went wrong -
-      # the driver retries in the background and this is the wait giving up. What actually
-      # failed is in the connection error the driver logged just above, so the message
-      # names the candidates and sends the reader there rather than asserting one.
-      {:error, _reason} ->
-        print_unusable_server_message(database_opts)
-        System.halt(1)
-    end
-
-    GenServer.stop(connection_pid)
+    DB.create_database_if_missing!(database)
+  rescue
+    # The reason carried here is always the pool's :queue_timeout, whatever went wrong -
+    # the driver retries in the background and this is the wait giving up. What actually
+    # failed is in the connection error the driver logged just above, so the message
+    # names the candidates and sends the reader there rather than asserting one.
+    DBConnection.ConnectionError ->
+      print_unusable_server_message(database_opts)
+      System.halt(1)
   end
 
   defp print_unusable_server_message(database_opts) do

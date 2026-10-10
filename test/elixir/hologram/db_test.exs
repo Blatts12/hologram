@@ -8,6 +8,7 @@ defmodule Hologram.DBTest do
 
   alias Hologram.AccessDeniedError
   alias Hologram.Auth.RoleGrant
+  alias Hologram.DB.Config
   alias Hologram.DB.Connection
   alias Hologram.DB.Introspection
   alias Hologram.DB.Mapper
@@ -112,6 +113,32 @@ defmodule Hologram.DBTest do
       assert context.env == "test"
       assert context.hologram_version == Mix.Project.config()[:version]
       assert %DateTime{} = context.timestamp
+    end
+  end
+
+  describe "create_database_if_missing!/1" do
+    test "creates a missing database, then leaves it alone" do
+      database = "hologram_create_test_#{System.pid()}_#{System.unique_integer([:positive])}"
+
+      on_exit(fn ->
+        {:ok, pid} = Postgrex.start_link(Config.connection_opts(database: "postgres"))
+        quoted_database = Mapper.quote_identifier(database)
+        Postgrex.query!(pid, "DROP DATABASE IF EXISTS #{quoted_database} WITH (FORCE)", [])
+        GenServer.stop(pid)
+      end)
+
+      assert create_database_if_missing!(database) == :created
+
+      {:ok, %{rows: rows}} =
+        Connection.query("SELECT 1 FROM pg_database WHERE datname = $1", [database])
+
+      assert rows == [[1]]
+
+      assert create_database_if_missing!(database) == :already_exists
+    end
+
+    test "defaults to the configured database" do
+      assert create_database_if_missing!() == :already_exists
     end
   end
 
