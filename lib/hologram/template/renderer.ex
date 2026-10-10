@@ -1,6 +1,7 @@
 defmodule Hologram.Template.Renderer do
   @moduledoc false
 
+  alias Hologram.Assets.ChunkRegistry
   alias Hologram.Assets.ManifestCache, as: AssetManifestCache
   alias Hologram.Assets.PageDigestRegistry
   alias Hologram.Auth
@@ -17,6 +18,7 @@ defmodule Hologram.Template.Renderer do
   alias Hologram.Entity.Validator
   alias Hologram.Query
   alias Hologram.Reflection
+  alias Hologram.Router.Helpers, as: RouterHelpers
   alias Hologram.Server
   alias Hologram.Sync.Carry
   alias Hologram.Template.DOM
@@ -187,6 +189,26 @@ defmodule Hologram.Template.Renderer do
   end
 
   @doc """
+  Substitutes the chunk tokens in the given HTML with the chunks supplied by the caller, given by
+  their digests: `$CHUNK_DIGESTS_JS_PLACEHOLDER` with the digests as a JavaScript array of strings,
+  and `$CHUNK_SCRIPT_TAGS_PLACEHOLDER` with a script tag per chunk. The digests are the compiler's
+  own, which need no escaping.
+  """
+  @spec interpolate_chunks(String.t(), [String.t()]) :: String.t()
+  def interpolate_chunks(html, chunk_digests) do
+    chunk_digests_js = Jason.encode!(chunk_digests)
+
+    chunk_script_tags =
+      Enum.map_join(chunk_digests, fn chunk_digest ->
+        ~s(<script async src="#{RouterHelpers.chunk_bundle_path(chunk_digest)}"></script>)
+      end)
+
+    html
+    |> String.replace("$CHUNK_DIGESTS_JS_PLACEHOLDER", chunk_digests_js)
+    |> String.replace("$CHUNK_SCRIPT_TAGS_PLACEHOLDER", chunk_script_tags)
+  end
+
+  @doc """
   Substitutes the given placeholders with the JavaScript source each maps to, in one pass over
   the given text.
 
@@ -321,12 +343,15 @@ defmodule Hologram.Template.Renderer do
   Only the HTML has the mount data interpolated into it, since a cold document has no channel for
   that state but the markup it is sent. The tree keeps the placeholders verbatim and the mount
   data is returned beside it, for a caller that carries the two as separate fields. Both
-  projections leave the Realtime placeholders for the caller to substitute.
+  projections leave the Realtime placeholders for the caller to substitute, and the chunk
+  placeholders too: the chunks the struct types in the component registry need are returned as
+  digests, and the caller knows of more (see `interpolate_chunks/2`).
 
   ## Examples
 
       iex> render_page(MyPage, %{param: "value"}, %Server{}, initial_page?: true)
       %{
+        chunk_digests: ["ABCDEFGH"],
         component_registry: %{"page" => %{module: MyPage, struct: %Component{state: %{a: 1, b: 2}}}},
         mount_data: %{
           actor_user_id: "123",
@@ -342,6 +367,7 @@ defmodule Hologram.Template.Renderer do
       }
   """
   @spec render_page(module, %{atom => any}, Server.t(), T.opts()) :: %{
+          chunk_digests: [String.t()],
           component_registry: %{String.t() => %{module: module, struct: Component.t()}},
           mount_data: %{
             actor_user_id: String.t(),
@@ -453,6 +479,7 @@ defmodule Hologram.Template.Renderer do
     # which is the caller's to do, since only the caller holds the Realtime values that go in the
     # same pass.
     %{
+      chunk_digests: ChunkRegistry.lookup_term(component_registry_for_client),
       component_registry: component_registry_with_page_struct,
       mount_data: mount_data_js,
       server_struct: final_server_struct,

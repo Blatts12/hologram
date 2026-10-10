@@ -3,6 +3,7 @@ defmodule Hologram.Controller do
 
   require Logger
 
+  alias Hologram.Assets.ChunkRegistry
   alias Hologram.Assets.PageDigestRegistry
   alias Hologram.Auth.Context
   alias Hologram.Compiler.Encoder
@@ -116,7 +117,9 @@ defmodule Hologram.Controller do
   readable before the render is patched in, rather than as a side effect of a script the patch
   inserts and the browser then runs.
 
-  The digest names the bundle to fetch when this client does not have the page's code yet.
+  The digest names the bundle to fetch when this client does not have the page's code yet, and the
+  chunk digests name the chunks the page needs before it mounts (see
+  `Hologram.Assets.ChunkRegistry`), which the client loads unless it has them.
 
   Every value but the tree is encoded the way a command's response encodes terms, as JavaScript the
   client evaluates, since that is the form its runtime already reads. The tree is not: it holds
@@ -149,6 +152,7 @@ defmodule Hologram.Controller do
   # The wire format for the tree, and the 112 alternatives it was measured against.
   # See: docs/navigation_payload_wire_format.md
   def build_page_data_payload(%{
+        chunk_digests: chunk_digests,
         mount_data: mount_data,
         page_digest: page_digest,
         self_echoes: self_echoes,
@@ -158,6 +162,7 @@ defmodule Hologram.Controller do
       }) do
     %{
       actorUserId: mount_data.actor_user_id,
+      chunks: chunk_digests,
       componentRegistry: mount_data.component_registry,
       pageDigest: page_digest,
       pageModule: mount_data.page_module,
@@ -416,6 +421,9 @@ defmodule Hologram.Controller do
       |> maybe_persist_user_id(server_struct, flushed_server_struct)
       |> Controller.json(%{
         action: encoded_next_action,
+        # The chunks the struct types in the action and in the self echoes need, which the client
+        # loads before it runs them.
+        chunks: ChunkRegistry.lookup_term({next_action, self_echoes}),
         selfEchoes: encoded_self_echoes,
         status: command_status,
         subReceiptAdds: encoded_sub_receipt_adds,
@@ -555,6 +563,7 @@ defmodule Hologram.Controller do
           result.tree
           |> Renderer.interpolate_js_in_tree(replacements)
           |> Renderer.print_dom()
+          |> Renderer.interpolate_chunks(result.chunk_digests)
 
         conn
         |> Controller.html(final_html)
@@ -662,6 +671,7 @@ defmodule Hologram.Controller do
         # encoder output into the tree's encoding and unescaping it again on arrival.
         payload =
           build_page_data_payload(%{
+            chunk_digests: result.chunk_digests,
             mount_data: result.mount_data,
             page_digest: PageDigestRegistry.lookup(page_module),
             self_echoes: result.self_echoes,
@@ -851,6 +861,19 @@ defmodule Hologram.Controller do
     Session.put_user_id(conn, user_id)
   end
 
+  # The chunks a rendered page needs before it mounts: the ones it preloads for the struct types
+  # its client code names, the ones its state needs, and the ones its self echoes need.
+  defp page_chunk_digests(page_module, state_chunk_digests, self_echoes) do
+    [
+      ChunkRegistry.lookup_page(page_module),
+      state_chunk_digests,
+      ChunkRegistry.lookup_term(self_echoes)
+    ]
+    |> Enum.concat()
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
   # Transport only: what a batch becomes is Hologram.Mutation's, the spelling of its answer
   # included - so that a repeated batch is answered with byte for byte what its first arrival
   # produced.
@@ -919,6 +942,7 @@ defmodule Hologram.Controller do
        middleware_server_struct}
     else
       %{
+        chunk_digests: state_chunk_digests,
         component_registry: component_registry,
         mount_data: mount_data,
         server_struct: rendered_server_struct,
@@ -944,6 +968,7 @@ defmodule Hologram.Controller do
       flushed_server_struct = Realtime.flush_broadcasts(rendered_server_struct)
 
       result = %{
+        chunk_digests: page_chunk_digests(page_module, state_chunk_digests, self_echoes),
         component_registry: component_registry,
         mount_data: mount_data,
         self_echoes: self_echoes,

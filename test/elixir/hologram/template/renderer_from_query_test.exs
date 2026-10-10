@@ -37,12 +37,14 @@ defmodule Hologram.Template.RendererFromQueryTest do
 
   use_module_stub :asset_manifest_cache
   use_module_stub :asset_path_registry
+  use_module_stub :chunk_registry
   use_module_stub :page_digest_registry
   use_module_stub :query_cache
 
   setup :set_mox_global
 
   setup do
+    setup_chunk_registry(ChunkRegistryStub)
     setup_query_cache(QueryCacheStub, false)
 
     dump_query_cache(QueryCacheStub, [Module97, Module105, Module106, Module108, Module95])
