@@ -1,12 +1,18 @@
 "use strict";
 
-import {assert, defineRuntimeGlobals, sinon} from "./support/helpers.mjs";
+import {
+  assert,
+  defineRuntimeGlobals,
+  registerWebApis,
+  sinon,
+} from "./support/helpers.mjs";
 
 import ErrorOverlay from "../../assets/js/error_overlay.mjs";
 import LiveReload from "../../assets/js/live_reload.mjs";
 import Type from "../../assets/js/type.mjs";
 
 defineRuntimeGlobals();
+registerWebApis();
 
 const OVERLAY_ID = "hologram-live-reload-error-overlay";
 
@@ -123,6 +129,14 @@ describe("LiveReload", () => {
 
     sinon.assert.calledOnce(reloadSpy);
     assert.isTrue(LiveReload.takeReloadMark());
+  });
+
+  it("revealPage()", () => {
+    globalThis.document = {documentElement: {style: {visibility: "hidden"}}};
+
+    LiveReload.revealPage();
+
+    assert.equal(globalThis.document.documentElement.style.visibility, "");
   });
 
   describe("takeReloadMark()", () => {
