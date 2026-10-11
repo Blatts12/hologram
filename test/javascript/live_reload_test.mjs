@@ -122,6 +122,21 @@ describe("LiveReload", () => {
     LiveReload.reload();
 
     sinon.assert.calledOnce(reloadSpy);
+    assert.isTrue(LiveReload.takeReloadMark());
+  });
+
+  describe("takeReloadMark()", () => {
+    it("a document not loaded by a live reload", () => {
+      assert.isFalse(LiveReload.takeReloadMark());
+    });
+
+    it("a document loaded by a live reload, answered once", () => {
+      globalThis.document = {location: {reload: sinon.spy()}};
+      LiveReload.reload();
+
+      assert.isTrue(LiveReload.takeReloadMark());
+      assert.isFalse(LiveReload.takeReloadMark());
+    });
   });
 
   describe("snapshotFits()", () => {
