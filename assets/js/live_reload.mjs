@@ -3,6 +3,7 @@
 import ErrorOverlay from "./error_overlay.mjs";
 
 const OVERLAY_ID = "hologram-live-reload-error-overlay";
+const RELOAD_MARK_KEY = "hologram_live_reload";
 
 // The client half of live reload: reloading the page once the server has
 // recompiled, reporting a compilation error until it does, and telling when a
@@ -48,8 +49,29 @@ export default class LiveReload {
     $.pageBundleDigests.set(pageModule.value, pageDigest);
   }
 
+  // The mark tells the document the reload loads to restore the page's state into the
+  // rebuilt code, rather than mount from the state the server renders.
   static reload() {
+    try {
+      sessionStorage.setItem(RELOAD_MARK_KEY, "1");
+    } catch {
+      // Without session storage the page reloads with the state the server renders.
+    }
+
     document.location.reload();
+  }
+
+  // Whether this document was loaded by a live reload. Answered once: the mark is
+  // cleared, so a reload the developer makes after it starts afresh.
+  static takeReloadMark() {
+    try {
+      const isMarked = sessionStorage.getItem(RELOAD_MARK_KEY) !== null;
+      sessionStorage.removeItem(RELOAD_MARK_KEY);
+
+      return isMarked;
+    } catch {
+      return false;
+    }
   }
 
   // Whether a page snapshot can be restored into the code given by the page digest and the

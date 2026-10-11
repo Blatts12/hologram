@@ -1623,6 +1623,32 @@ export default class Hologram {
     }
   }
 
+  // The snapshot the tab saved as it unloaded for a live reload, restored into the rebuilt code so
+  // the page keeps its state. It is read from session storage, where the unload wrote it, because
+  // OPFS can hold an older one for the same entry. Its chunks are left out: they carry the old code
+  // of struct modules, and this document has loaded the new code. A snapshot of a page other than
+  // the one the server rendered, after a route change, is passed over.
+  static #getLiveReloadSnapshot(historyId) {
+    try {
+      const serializedSnapshot = sessionStorage.getItem(
+        $.#pageSnapshotKey(historyId),
+      );
+
+      if (!serializedSnapshot) {
+        return null;
+      }
+
+      const pageSnapshot = Deserializer.deserialize(serializedSnapshot);
+      const {pageModule} = globalThis.Hologram.pageMountData(Hologram.#deps);
+
+      return pageSnapshot.pageModule.value === pageModule.value
+        ? {...pageSnapshot, chunkDigests: []}
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   // Deps: [:maps.get/2]
   static #getToParam(dispatch) {
     return Erlang_Maps["get/2"](
@@ -1828,8 +1854,13 @@ export default class Hologram {
       true,
     );
 
+    const isLiveReload = LiveReload.takeReloadMark();
+
     // Check if there's already a history state (e.g., when navigating back from external page)
-    if (history.state) {
+    if (history.state && isLiveReload) {
+      $.#historyId = history.state;
+      $.#documentSnapshot = $.#getLiveReloadSnapshot(history.state);
+    } else if (history.state) {
       $.#historyId = history.state;
       const pageSnapshot = await $.#getPageSnapshot(history.state);
 
