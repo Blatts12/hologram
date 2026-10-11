@@ -3,6 +3,7 @@
 import ErrorOverlay from "./error_overlay.mjs";
 
 const OVERLAY_ID = "hologram-live-reload-error-overlay";
+// Also read by the boot script in Hologram.UI.Runtime.
 const RELOAD_MARK_KEY = "hologram_live_reload";
 
 // The client half of live reload: reloading the page once the server has
@@ -59,6 +60,15 @@ export default class LiveReload {
     }
 
     document.location.reload();
+  }
+
+  // A document loaded by a live reload is hidden by the boot script until its first render
+  // (see Hologram.UI.Runtime). The server renders it with the page's initial state, which
+  // would otherwise show for a frame before the restored state replaces it.
+  static revealPage() {
+    if (document.documentElement.style.visibility === "hidden") {
+      document.documentElement.style.visibility = "";
+    }
   }
 
   // Whether this document was loaded by a live reload. Answered once: the mark is

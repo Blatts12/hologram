@@ -2230,6 +2230,8 @@ export default class Hologram {
         // A template expression is app code and can raise, so the flag is cleared on the way out
         // either way. Leaving it set would hold every action from here on.
         $.isMounting = false;
+
+        LiveReload.revealPage();
       }
 
       if ($.#scrollPosition) {
