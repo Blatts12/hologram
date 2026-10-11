@@ -16,11 +16,14 @@ export default class LiveReload {
   static pageBundleDigests = new Map();
 
   // The pages arrive as the server names them ("Elixir.MyApp.HomePage"), which is the
-  // value of the boxed page module atom. The tab reloads when its own page is among them,
-  // or when every tab must, because the runtime script it runs was rebuilt.
-  static handleReload(pages, currentPageModule) {
-    if (pages === "all" || pages.includes(currentPageModule.value)) {
+  // value of the boxed page module atom. When its own page is among them, the tab swaps
+  // in the page's rebuilt code where it stands. When every tab must reload, because the
+  // runtime script it runs was rebuilt, the tab reloads.
+  static handleReload(pages, currentPageModule, swapPageCode) {
+    if (pages === "all") {
       $.reload();
+    } else if (pages.includes(currentPageModule.value)) {
+      swapPageCode();
     }
   }
 
@@ -52,9 +55,11 @@ export default class LiveReload {
 
   // The mark tells the document the reload loads to restore the page's state into the
   // rebuilt code, rather than mount from the state the server renders.
-  static reload() {
+  static reload(isStateKept = true) {
     try {
-      sessionStorage.setItem(RELOAD_MARK_KEY, "1");
+      if (isStateKept) {
+        sessionStorage.setItem(RELOAD_MARK_KEY, "1");
+      }
     } catch {
       // Without session storage the page reloads with the state the server renders.
     }

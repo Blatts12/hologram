@@ -559,6 +559,49 @@ export default class Hologram {
   }
 
   // Made public to make tests easier
+  //
+  // Brings in the rebuilt code of the page on screen without reloading the document, so the page
+  // keeps its state and nothing flashes. The rebuilt bundle redefines the functions of the page and
+  // its components in place, and the page renders again with the state it holds. When the bundle
+  // cannot be had, or the state no longer fits the code and the render raises, the document reloads
+  // with the state the server renders.
+  static async swapPageCode() {
+    const pageModule = $.#pageModule;
+
+    try {
+      const pageDigest = await Client.fetchPageDigest(pageModule);
+
+      // A failure is answered below, so it is not raised as well.
+      ScriptRegistry.request(
+        [{digest: pageDigest, path: $.#pageBundlePath(pageModule, pageDigest)}],
+        () => true,
+      );
+
+      await ScriptRegistry.whenLoaded([pageDigest]);
+
+      LiveReload.recordPageBundle(pageModule, pageDigest);
+
+      // The tab moved on meanwhile: a navigation in flight mounts with the code just defined.
+      if (
+        $.#pageModule?.value !== pageModule.value ||
+        $.isMounting ||
+        $.domEpoch !== $.registryEpoch
+      ) {
+        return;
+      }
+
+      $.render();
+    } catch (error) {
+      console.warn(
+        "Hologram: live reload could not keep the page's state, reloading afresh:",
+        error,
+      );
+
+      LiveReload.reload(false);
+    }
+  }
+
+  // Made public to make tests easier
   // Deps: [:maps.get/2, :maps.get/3, :maps.put/3]
   static queueActionsFromServerInits() {
     for (const [cid, entry] of Object.values(ComponentRegistry.entries.data)) {
