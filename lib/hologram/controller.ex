@@ -779,11 +779,19 @@ defmodule Hologram.Controller do
   # pulls out the two fields the page-render path needs from the client:
   # the stable JS-context `instance_id` and the subscription keys the client claims to
   # currently hold in its subscription receipt registry.
+  #
+  # A live reload asks for the page it shows to read its rebuilt initial state, and
+  # stays on that page. Its claims come wrapped in `{:keep, keys}` so the transition
+  # drops none of them (see `transition_subscriptions/2`).
   defp extract_page_request_payload(%Plug.Conn{body_params: %{"_json" => json}}) do
-    %{instance_id: instance_id, client_claimed_sub_keys: client_claimed_sub_keys} =
-      Deserializer.deserialize(json)
+    payload = Deserializer.deserialize(json)
+    %{instance_id: instance_id, client_claimed_sub_keys: client_claimed_sub_keys} = payload
 
-    {instance_id, client_claimed_sub_keys}
+    if Map.get(payload, :keep_subscriptions, false) do
+      {instance_id, {:keep, client_claimed_sub_keys}}
+    else
+      {instance_id, client_claimed_sub_keys}
+    end
   end
 
   defp forbid(conn, log_message) do
@@ -1107,6 +1115,21 @@ defmodule Hologram.Controller do
   defp transition_subscriptions(server, client_claimed_sub_keys)
 
   defp transition_subscriptions(%Server{instance_id: nil}, _client_claimed_sub_keys), do: {[], []}
+
+  # The page stays on screen with the state it holds, so the subscriptions its commands
+  # added still stand. Only the ones the page declares and the client lacks are added.
+  defp transition_subscriptions(server, {:keep, client_claimed_sub_keys}) do
+    case SubscriptionRegistry.diff_sub_keys(server.subscriptions, client_claimed_sub_keys) do
+      {[], _drop_keys} ->
+        {[], []}
+
+      {add_keys, _drop_keys} ->
+        {actually_added, _actually_dropped} =
+          SubscriptionRegistry.apply_deltas(server.instance_id, add_keys, [], server.user_id)
+
+        {build_receipts(actually_added, server), []}
+    end
+  end
 
   defp transition_subscriptions(
          %Server{instance_id: instance_id, subscriptions: subscriptions} = server,

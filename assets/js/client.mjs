@@ -87,15 +87,23 @@ export default class Client {
     return queryParts.length > 0 ? `?${queryParts.join("&")}` : "";
   }
 
-  static buildPageRequestPayload() {
+  // A live reload keeps the subscriptions the client holds, which the server
+  // otherwise trades for the ones the page declares.
+  static buildPageRequestPayload(isKeepingSubscriptions = false) {
     const clientClaimedSubKeys = Array.from(
       App.subscriptionReceiptRegistry.entries.values(),
     ).map((triple) => Type.tuple([triple.data[0], triple.data[1]]));
 
-    return Type.map([
+    const fields = [
       [Type.atom("client_claimed_sub_keys"), Type.list(clientClaimedSubKeys)],
       [Type.atom("instance_id"), Type.bitstring(App.instanceId)],
-    ]);
+    ];
+
+    if (isKeepingSubscriptions) {
+      fields.push([Type.atom("keep_subscriptions"), Type.boolean(true)]);
+    }
+
+    return Type.map(fields);
   }
 
   static connect(sendImmediatePing) {
@@ -110,7 +118,12 @@ export default class Client {
   // what tells the two apart. Anything that is not a page goes to onNotPage, for the caller to hand
   // to the browser - which is also where an opaque redirect lands, redirects being left to the
   // browser rather than followed here.
-  static async fetchPage(toParam, onSuccess, onNotPage) {
+  static async fetchPage(
+    toParam,
+    onSuccess,
+    onNotPage,
+    isKeepingSubscriptions = false,
+  ) {
     let pageModule, queryString;
 
     if (Type.isAlias(toParam)) {
@@ -128,7 +141,10 @@ export default class Client {
       const response = await fetch(url, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: Serializer.serialize($.buildPageRequestPayload(), "server"),
+        body: Serializer.serialize(
+          $.buildPageRequestPayload(isKeepingSubscriptions),
+          "server",
+        ),
         redirect: "manual",
       });
 

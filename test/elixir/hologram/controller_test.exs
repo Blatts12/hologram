@@ -3096,6 +3096,32 @@ defmodule Hologram.ControllerTest do
 
       assert_receive {:replace_subscriptions, [], nil}
     end
+
+    test "keeps the subscriptions the client holds when a live reload asks for the page" do
+      ETS.put(PageDigestRegistryStub.ets_table_name(), Module4, :dummy_module_4_digest)
+
+      topic = Realtime.instance_announce_topic("test-instance-id")
+      Phoenix.PubSub.subscribe(Hologram.PubSub, topic)
+
+      [version, %{"d" => fields} = payload] =
+        page_request_body("test-instance-id", [{:room_a, "page"}])
+
+      body = [version, %{payload | "d" => fields ++ [["akeep_subscriptions", "atrue"]]}]
+
+      conn =
+        :post
+        |> Plug.Test.conn(
+          "/hologram/page/Hologram.Test.Fixtures.Controller.Module4",
+          ""
+        )
+        |> Plug.Test.init_test_session(%{})
+        |> Map.put(:body_params, %{"_json" => body})
+        |> handle_subsequent_page_request(Module4)
+
+      refute_receive {:replace_subscriptions, _subscriptions, _user_id}
+      assert %{"subReceiptDrops" => drops} = Jason.decode!(conn.resp_body)
+      assert drops == Encoder.encode_term!([])
+    end
   end
 
   describe "send_response/2" do

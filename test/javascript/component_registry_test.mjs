@@ -218,6 +218,86 @@ describe("ComponentRegistry", () => {
     );
   });
 
+  describe("mergeKeptState()", () => {
+    const freshState = Type.map([
+      [Type.atom("state_1a"), Type.integer(1)],
+      [Type.atom("state_1c"), Type.integer(3)],
+    ]);
+
+    const freshEntry = Type.map([
+      [Type.atom("module"), module1],
+      [
+        Type.atom("struct"),
+        Type.componentStruct({
+          emittedContext: emittedContext3,
+          state: freshState,
+        }),
+      ],
+    ]);
+
+    it("keeps the old value of a key the fresh state still has", () => {
+      const result = ComponentRegistry.mergeKeptState(
+        Type.map([[cid1, entry1]]),
+        Type.map([[cid1, freshEntry]]),
+      );
+
+      ComponentRegistry.entries = result;
+
+      assert.deepStrictEqual(
+        ComponentRegistry.getComponentState(cid1),
+        Type.map([
+          [Type.atom("state_1a"), Type.integer(101)],
+          [Type.atom("state_1c"), Type.integer(3)],
+        ]),
+      );
+    });
+
+    it("keeps the rest of the old struct", () => {
+      ComponentRegistry.entries = ComponentRegistry.mergeKeptState(
+        Type.map([[cid1, entry1]]),
+        Type.map([[cid1, freshEntry]]),
+      );
+
+      assert.deepStrictEqual(
+        ComponentRegistry.getComponentEmittedContext(cid1),
+        emittedContext1,
+      );
+    });
+
+    it("takes the fresh entry of a component made of another module", () => {
+      const result = ComponentRegistry.mergeKeptState(
+        Type.map([[cid1, entry2]]),
+        Type.map([[cid1, freshEntry]]),
+      );
+
+      assert.deepStrictEqual(result, Type.map([[cid1, freshEntry]]));
+    });
+
+    it("takes the fresh entry of a component the old entries lack", () => {
+      const result = ComponentRegistry.mergeKeptState(
+        Type.map([[cid2, entry2]]),
+        Type.map([[cid1, freshEntry]]),
+      );
+
+      assert.deepStrictEqual(
+        result,
+        Type.map([
+          [cid2, entry2],
+          [cid1, freshEntry],
+        ]),
+      );
+    });
+
+    it("keeps the old entry of a component the fresh render did not make", () => {
+      const result = ComponentRegistry.mergeKeptState(
+        Type.map([[cid2, entry2]]),
+        Type.map(),
+      );
+
+      assert.deepStrictEqual(result, Type.map([[cid2, entry2]]));
+    });
+  });
+
   describe("putComponentProps()", () => {
     const oldProps = Type.map([[Type.atom("prop_a"), Type.integer(1)]]);
     const newProps = Type.map([[Type.atom("prop_b"), Type.integer(2)]]);
