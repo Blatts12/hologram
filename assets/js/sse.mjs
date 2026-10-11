@@ -189,7 +189,11 @@ export default class Sse {
       });
 
       $.eventSource.addEventListener("reload", (event) => {
-        LiveReload.handleReload(JSON.parse(event.data), Hologram.pageModule());
+        LiveReload.handleReload(
+          JSON.parse(event.data),
+          Hologram.pageModule(),
+          () => Hologram.swapPageCode(),
+        );
       });
 
       $.eventSource.onopen = () => {

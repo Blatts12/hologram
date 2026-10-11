@@ -559,6 +559,90 @@ export default class Hologram {
   }
 
   // Made public to make tests easier
+  //
+  // Brings in the rebuilt code of the page on screen without reloading the document, so the page
+  // keeps its state and nothing flashes. The page is asked for again, which gives its rebuilt
+  // bundle, the chunks the rebuilt code needs and the state the rebuilt init sets. The bundle
+  // redefines the functions of the page and its components in place, each component keeps its
+  // state on the keys the rebuilt init still sets (see ComponentRegistry.mergeKeptState()), and
+  // the page renders again. When the page cannot be had, or the state no longer fits the code and
+  // the render raises, the document reloads with the state the server renders.
+  static async swapPageCode() {
+    const pageModule = $.#pageModule;
+
+    try {
+      let payload = null;
+
+      // The page stays on screen, so the server keeps the subscriptions the tab holds.
+      await Client.fetchPage(
+        Type.tuple([pageModule, $.#pageParams]),
+        (pagePayload) => {
+          payload = pagePayload;
+        },
+        () => {},
+        true,
+      );
+
+      // A redirect, or an answer that is not a page, now that the page's code has changed.
+      if (payload?.type !== "page") {
+        throw new HologramRuntimeError("the page answered with no page");
+      }
+
+      const chunkDigests = payload.chunks ?? [];
+      chunkDigests.forEach((digest) => $.#chunkDigests.add(digest));
+
+      // A failure is answered below, so it is not raised as well.
+      ScriptRegistry.request(
+        [
+          {
+            digest: payload.pageDigest,
+            path: $.#pageBundlePath(pageModule, payload.pageDigest),
+          },
+          ...chunkDigests.map((digest) => ({
+            digest: digest,
+            path: $.#chunkBundlePath(digest),
+          })),
+        ],
+        () => true,
+      );
+
+      await ScriptRegistry.whenLoaded([payload.pageDigest, ...chunkDigests]);
+
+      LiveReload.recordPageBundle(pageModule, payload.pageDigest);
+
+      // The tab moved on meanwhile: a navigation in flight mounts with the code just defined.
+      if (
+        $.#pageModule?.value !== pageModule.value ||
+        $.isMounting ||
+        $.domEpoch !== $.registryEpoch
+      ) {
+        return;
+      }
+
+      ComponentRegistry.populate(
+        ComponentRegistry.mergeKeptState(
+          ComponentRegistry.entries,
+          Interpreter.evaluateJavaScriptExpression(payload.componentRegistry),
+        ),
+      );
+
+      App.subscriptionReceiptRegistry.merge(
+        Interpreter.evaluateJavaScriptExpression(payload.subReceiptAdds),
+        Interpreter.evaluateJavaScriptExpression(payload.subReceiptDrops),
+      );
+
+      $.render();
+    } catch (error) {
+      console.warn(
+        "Hologram: live reload could not keep the page's state, reloading afresh:",
+        error,
+      );
+
+      LiveReload.reload(false);
+    }
+  }
+
+  // Made public to make tests easier
   // Deps: [:maps.get/2, :maps.get/3, :maps.put/3]
   static queueActionsFromServerInits() {
     for (const [cid, entry] of Object.values(ComponentRegistry.entries.data)) {
@@ -1227,6 +1311,44 @@ export default class Hologram {
     }
   }
 
+  // The snapshot the tab saved as it unloaded for a live reload, restored into the rebuilt code so
+  // the page keeps its state. It is read from session storage, where the unload wrote it, because
+  // OPFS can hold an older one for the same entry. Its components keep their state on the keys the
+  // rebuilt init still sets (see ComponentRegistry.mergeKeptState()). Its chunks are left out: they
+  // carry the old code of struct modules, and this document has loaded the new code. A snapshot of
+  // a page other than the one the server rendered, after a route change, is passed over.
+  static #getLiveReloadSnapshot(historyId) {
+    try {
+      const serializedSnapshot = sessionStorage.getItem(
+        $.#pageSnapshotKey(historyId),
+      );
+
+      if (!serializedSnapshot) {
+        return null;
+      }
+
+      const pageSnapshot = Deserializer.deserialize(serializedSnapshot);
+      const {componentRegistry, pageModule} = globalThis.Hologram.pageMountData(
+        Hologram.#deps,
+      );
+
+      if (pageSnapshot.pageModule.value !== pageModule.value) {
+        return null;
+      }
+
+      return {
+        ...pageSnapshot,
+        chunkDigests: [],
+        componentRegistryEntries: ComponentRegistry.mergeKeptState(
+          pageSnapshot.componentRegistryEntries,
+          componentRegistry,
+        ),
+      };
+    } catch {
+      return null;
+    }
+  }
+
   // Deps: [:maps.get/2]
   static #getToParam(operation) {
     return Erlang_Maps["get/2"](
@@ -1432,8 +1554,13 @@ export default class Hologram {
       true,
     );
 
+    const isLiveReload = LiveReload.takeReloadMark();
+
     // Check if there's already a history state (e.g., when navigating back from external page)
-    if (history.state) {
+    if (history.state && isLiveReload) {
+      $.#historyId = history.state;
+      $.#documentSnapshot = $.#getLiveReloadSnapshot(history.state);
+    } else if (history.state) {
       $.#historyId = history.state;
       const pageSnapshot = await $.#getPageSnapshot(history.state);
 
@@ -1724,6 +1851,8 @@ export default class Hologram {
         // A template expression is app code and can raise, so the flag is cleared on the way out
         // either way. Leaving it set would hold every action from here on.
         $.isMounting = false;
+
+        LiveReload.revealPage();
       }
 
       if ($.#scrollPosition) {

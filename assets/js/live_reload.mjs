@@ -3,6 +3,8 @@
 import ErrorOverlay from "./error_overlay.mjs";
 
 const OVERLAY_ID = "hologram-live-reload-error-overlay";
+// Also read by the boot script in Hologram.UI.Runtime.
+const RELOAD_MARK_KEY = "hologram_live_reload";
 
 // The client half of live reload: reloading the page once the server has
 // recompiled, reporting a compilation error until it does, and telling when a
@@ -14,11 +16,14 @@ export default class LiveReload {
   static pageBundleDigests = new Map();
 
   // The pages arrive as the server names them ("Elixir.MyApp.HomePage"), which is the
-  // value of the boxed page module atom. The tab reloads when its own page is among them,
-  // or when every tab must, because the runtime script it runs was rebuilt.
-  static handleReload(pages, currentPageModule) {
-    if (pages === "all" || pages.includes(currentPageModule.value)) {
+  // value of the boxed page module atom. When its own page is among them, the tab swaps
+  // in the page's rebuilt code where it stands. When every tab must reload, because the
+  // runtime script it runs was rebuilt, the tab reloads.
+  static handleReload(pages, currentPageModule, swapPageCode) {
+    if (pages === "all") {
       $.reload();
+    } else if (pages.includes(currentPageModule.value)) {
+      swapPageCode();
     }
   }
 
@@ -48,8 +53,40 @@ export default class LiveReload {
     $.pageBundleDigests.set(pageModule.value, pageDigest);
   }
 
-  static reload() {
+  // The mark tells the document the reload loads to restore the page's state into the
+  // rebuilt code, rather than mount from the state the server renders.
+  static reload(isStateKept = true) {
+    try {
+      if (isStateKept) {
+        sessionStorage.setItem(RELOAD_MARK_KEY, "1");
+      }
+    } catch {
+      // Without session storage the page reloads with the state the server renders.
+    }
+
     document.location.reload();
+  }
+
+  // A document loaded by a live reload is hidden by the boot script until its first render
+  // (see Hologram.UI.Runtime). The server renders it with the page's initial state, which
+  // would otherwise show for a frame before the restored state replaces it.
+  static revealPage() {
+    if (document.documentElement.style.visibility === "hidden") {
+      document.documentElement.style.visibility = "";
+    }
+  }
+
+  // Whether this document was loaded by a live reload. Answered once: the mark is
+  // cleared, so a reload the developer makes after it starts afresh.
+  static takeReloadMark() {
+    try {
+      const isMarked = sessionStorage.getItem(RELOAD_MARK_KEY) !== null;
+      sessionStorage.removeItem(RELOAD_MARK_KEY);
+
+      return isMarked;
+    } catch {
+      return false;
+    }
   }
 
   // Whether a page snapshot can be restored into the code given by the page digest and the

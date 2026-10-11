@@ -25,6 +25,13 @@ defmodule Hologram.UI.Runtime do
         globalThis.Hologram.dispatchAction = function(actionName, target, params) \{
           globalThis.Hologram._pendingJsInteropActions.push([actionName, target, params]);
         \}
+
+        try \{
+          if (sessionStorage.getItem("hologram_live_reload")) \{
+            document.documentElement.style.visibility = "hidden";
+            setTimeout(() => \{ document.documentElement.style.visibility = ""; \}, 3000);
+          \}
+        \} catch \{\}
       </script>
     {/if}
 
