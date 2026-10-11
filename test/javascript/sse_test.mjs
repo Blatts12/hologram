@@ -2135,7 +2135,25 @@ describe("Sse", () => {
         handleReloadStub,
         ["Elixir.MyApp.Page1"],
         pageModule,
+        sinon.match.func,
       );
+    });
+
+    it("hands over a swap of the page's code", async () => {
+      stubHandshakeResponse();
+
+      sinon
+        .stub(Hologram, "pageModule")
+        .returns(Type.atom("Elixir.MyApp.Page1"));
+      const handleReloadStub = sinon.stub(LiveReload, "handleReload");
+      const swapStub = sinon.stub(Hologram, "swapPageCode");
+
+      await Sse.connect();
+
+      Sse.eventSource.listeners.reload({data: '["Elixir.MyApp.Page1"]'});
+      handleReloadStub.firstCall.args[2]();
+
+      sinon.assert.calledOnce(swapStub);
     });
 
     it("hands over all when every tab must reload", async () => {

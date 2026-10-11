@@ -33,32 +33,40 @@ describe("LiveReload", () => {
 
     it("reloads when every tab must", () => {
       const reloadStub = sinon.stub(LiveReload, "reload");
+      const swapSpy = sinon.spy();
 
-      LiveReload.handleReload("all", currentPageModule);
+      LiveReload.handleReload("all", currentPageModule, swapSpy);
 
       sinon.assert.calledOnce(reloadStub);
+      sinon.assert.notCalled(swapSpy);
     });
 
-    it("reloads when the page shown is among the rebuilt ones", () => {
+    it("swaps the page's code when the page shown is among the rebuilt ones", () => {
       const reloadStub = sinon.stub(LiveReload, "reload");
+      const swapSpy = sinon.spy();
 
       LiveReload.handleReload(
         ["Elixir.MyApp.Page2", "Elixir.MyApp.Page1"],
         currentPageModule,
+        swapSpy,
       );
 
-      sinon.assert.calledOnce(reloadStub);
+      sinon.assert.calledOnce(swapSpy);
+      sinon.assert.notCalled(reloadStub);
     });
 
-    it("does not reload when the page shown was not rebuilt", () => {
+    it("does nothing when the page shown was not rebuilt", () => {
       const reloadStub = sinon.stub(LiveReload, "reload");
+      const swapSpy = sinon.spy();
 
       LiveReload.handleReload(
         ["Elixir.MyApp.Page2", "Elixir.MyApp.Page3"],
         currentPageModule,
+        swapSpy,
       );
 
       sinon.assert.notCalled(reloadStub);
+      sinon.assert.notCalled(swapSpy);
     });
   });
 
@@ -137,6 +145,14 @@ describe("LiveReload", () => {
     LiveReload.revealPage();
 
     assert.equal(globalThis.document.documentElement.style.visibility, "");
+  });
+
+  it("reload(), dropping the state", () => {
+    globalThis.document = {location: {reload: sinon.spy()}};
+
+    LiveReload.reload(false);
+
+    assert.isFalse(LiveReload.takeReloadMark());
   });
 
   describe("takeReloadMark()", () => {
