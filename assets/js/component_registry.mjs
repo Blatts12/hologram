@@ -67,6 +67,66 @@ export default class ComponentRegistry {
     return Type.isTrue(Erlang_Maps["is_key/2"](cid, ComponentRegistry.entries));
   }
 
+  // The entries a live reload goes on with: the fresh ones the server rendered with the rebuilt
+  // code, each component keeping the state it held. A state key the rebuilt init no longer sets is
+  // dropped, and a new one starts at its initial value. A component the fresh render made of
+  // another module, or made where there was none, is taken as rendered. A component the fresh
+  // render did not make, one the old state put on the page, is kept as it was.
+  static mergeKeptState(oldEntries, freshEntries) {
+    const data = {...oldEntries.data};
+
+    for (const [encodedCid, [cid, freshEntry]] of Object.entries(
+      freshEntries.data,
+    )) {
+      const oldEntry = oldEntries.data[encodedCid]?.[1];
+
+      if (
+        !oldEntry ||
+        oldEntry.data["atom(module)"][1].value !==
+          freshEntry.data["atom(module)"][1].value
+      ) {
+        data[encodedCid] = [cid, freshEntry];
+        continue;
+      }
+
+      const oldStruct = oldEntry.data["atom(struct)"][1];
+
+      const state = ComponentRegistry.#keepOldValues(
+        freshEntry.data["atom(struct)"][1].data["atom(state)"][1],
+        oldStruct.data["atom(state)"][1],
+      );
+
+      const struct = {
+        type: "map",
+        data: {...oldStruct.data, "atom(state)": [Type.atom("state"), state]},
+      };
+
+      data[encodedCid] = [
+        cid,
+        {
+          type: "map",
+          data: {
+            ...oldEntry.data,
+            "atom(struct)": [Type.atom("struct"), struct],
+          },
+        },
+      ];
+    }
+
+    return {type: "map", data};
+  }
+
+  // The fresh map's keys, each holding the old map's value where the old map has the key.
+  static #keepOldValues(freshMap, oldMap) {
+    const data = {};
+
+    for (const [encodedKey, [key, value]] of Object.entries(freshMap.data)) {
+      data[encodedKey] = [key, oldMap.data[encodedKey]?.[1] ?? value];
+    }
+
+    return {type: "map", data};
+  }
+
   static populate(entries) {
     ComponentRegistry.entries = entries;
   }
